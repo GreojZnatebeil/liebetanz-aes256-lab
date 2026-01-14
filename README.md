@@ -25,9 +25,22 @@ Even if the AES core looks correct, real-world secure encryption requires much m
 This repository intentionally keeps things simple to make the core concepts understandable.
 
 ## Quick start
-- Open the project in Lazarus
-- Build & run
-- Follow the learning path in `docs/` (German)
+1. Clone or download this repository
+2. Open `src/aes_256.lpi` in Lazarus
+3. Build & Run
+
+Main application form:
+- `Application.CreateForm(TAES_256_Lab, AES_256_Lab)`
+
+Project structure (main units):
+- `AES_256_Lab_Main` (GUI / entry point)
+- `uAES256` (AES core building blocks)
+- `uAES256_ECB` (ECB mode – educational)
+- `uAES256_CBC` (CBC mode – educational)
+- `uAES256_Container` (helper/container structures)
+- `uSHA256` (SHA-256 used for learning/derivations in this project)
+
+Documentation / learning path (German): see `docs/`
 
 ## Goals
 - Transparent, readable AES-256 implementation for learning
