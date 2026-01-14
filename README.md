@@ -1,4 +1,5 @@
 # AES-256-Lab (Lazarus / FreePascal)
+Transparent AES-256 learning implementation in Lazarus/FreePascal (German project, educational only).
 
 English | [Deutsch](README.de.md)
 
