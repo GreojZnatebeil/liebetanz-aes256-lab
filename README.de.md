@@ -20,9 +20,22 @@ Ein korrekter AES-Kern ist nur ein kleiner Teil von echter, sicherer Kryptografi
 Dieses Repo hält viele Punkte bewusst einfach, damit man die Grundlagen gut verstehen kann.
 
 ## Quick Start
-- Projekt in Lazarus öffnen
-- Build & Run
-- Lernpfad siehe `docs/`
+1. Repository klonen oder als ZIP herunterladen
+2. In Lazarus `src/aes_256.lpi` öffnen
+3. Build & Run
+
+Hauptformular:
+- `Application.CreateForm(TAES_256_Lab, AES_256_Lab)`
+
+Projektstruktur (wichtige Units):
+- `AES_256_Lab_Main` (GUI / Einstieg)
+- `uAES256` (AES-Kernbausteine)
+- `uAES256_ECB` (ECB-Modus – didaktisch)
+- `uAES256_CBC` (CBC-Modus – didaktisch)
+- `uAES256_Container` (Hilfs-/Containerstrukturen)
+- `uSHA256` (SHA-256 für Lernzwecke/Herleitungen im Projekt)
+
+Doku / Lernpfad: siehe `docs/`
 
 ## Ziele
 - Transparente, lesbare AES-256-Implementierung zum Lernen
