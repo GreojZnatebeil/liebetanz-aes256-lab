@@ -48,7 +48,8 @@ Documentation / learning path (German): see `docs/`
 - Documentation and step-by-step explanations
 
 ## License / Disclaimer
-MIT License. Provided “as is”, without warranty. Use at your own risk.
+GNU AFFERO GENERAL PUBLIC LICENSE Version 3, 19 November 2007. 
+Provided “as is”, without warranty. Use at your own risk.
 
 ## Contact
 jl-software@online.de
