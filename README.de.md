@@ -43,7 +43,8 @@ Doku / Lernpfad: siehe `docs/`
 - Schritt-für-Schritt-Erklärungen (Code + `docs/`)
 
 ## Lizenz / Haftung
-MIT-Lizenz. Bereitgestellt „wie gesehen“, ohne Garantie oder Haftung. Nutzung auf eigenes Risiko.
+GNU AFFERO GENERAL PUBLIC LICENSE Version 3, 19 November 2007. 
+Bereitgestellt „wie gesehen“, ohne Garantie oder Haftung. Nutzung auf eigenes Risiko.
 
 ## Kontakt
 jl-software@online.de
