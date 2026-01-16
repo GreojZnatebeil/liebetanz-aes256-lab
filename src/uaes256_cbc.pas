@@ -21,8 +21,7 @@ interface
 *)
 
 uses
-  SysUtils,
-  uAES256;                              // Core-Unit: Typen + Blockfunktionen + XOR-Hilfe
+  SysUtils,uAES256;                              // Core-Unit: Typen + Blockfunktionen + XOR-Hilfe
 
 function AES256EncryptCBC(const PlainData: TBytes; const IV: TByteArray16;
   const Context: TAES256Context): TBytes;

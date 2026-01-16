@@ -130,12 +130,8 @@ begin
 
   FillChar(LocalIV, SizeOf(LocalIV), 0);
 
-if Mode = acmCBC then
-  for I := 0 to 15 do
-    LocalIV[I] := IV[I];
+if Mode = acmCBC then  LocalIV := IV;
 
-  if Mode = acmCBC then
-    LocalIV := IV; // Kopie des übergebenen IV (Lehrmodus: kann auch fest sein)
 
   CipherLen := LongWord(Length(CipherBytes));
   ModeByte := ModeToByte(Mode);
@@ -210,15 +206,20 @@ begin
   for I := 0 to 15 do
     IV[I] := Container[12 + I];
 
-  // CipherLen lesen
   CipherLen := ReadUInt32LE(Container, 28);
 
-  // Plausibilität
-  if (HEADER_LEN + Integer(CipherLen)) > TotalLen then Exit;
+   // Robustheit: erst prüfen, dann casten
+   if CipherLen > LongWord(High(Integer)) then Exit;
 
-  SetLength(CipherBytes, CipherLen);
-  if CipherLen > 0 then
-    Move(Container[HEADER_LEN], CipherBytes[0], CipherLen);
+   // Plausibilität
+   if (HEADER_LEN + Integer(CipherLen)) > TotalLen then Exit;
+
+   SetLength(CipherBytes, Integer(CipherLen));
+   if CipherLen > 0 then
+     Move(Container[HEADER_LEN], CipherBytes[0], Integer(CipherLen));
+
+
+
 
   Result := True;
 end;
@@ -256,10 +257,12 @@ begin
     FS := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
     try
       Size := FS.Size;
-      if Size <= 0 then Exit;
+      if Size > High(Integer) then Exit;
 
       SetLength(Container, Size);
       FS.ReadBuffer(Container[0], Size);
+
+
     finally
       FS.Free;
     end;

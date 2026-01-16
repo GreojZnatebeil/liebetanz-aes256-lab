@@ -1,16 +1,7 @@
 # Security Policy
 
-## Scope
-This repository (**AES-256-Lab**) is an **educational** project. It is **not** a security product and it is **not** intended to protect real-world data.
+This repository is an educational project and **not** a security product.
+Please do not report vulnerabilities as if this were a production encryption library.
 
-## Reporting issues
-If you find mistakes in the implementation, documentation, or examples, please open a GitHub **Issue** with:
-- a short description
-- steps to reproduce (if applicable)
-- expected vs. actual behavior
-- (optional) references / test vectors
+If you spot mistakes in the implementation, feel free to open an issue or a pull request.
 
-Please do not treat this as a production encryption library and do not submit vulnerability reports as if this were a hardened security product.
-
-## Contact
-jl-software@online.de

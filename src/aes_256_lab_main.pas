@@ -17,19 +17,24 @@ interface
 *)
 
 uses
-  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls, ComCtrls,
-  ExtCtrls,
+  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls, ComCtrls,ExtCtrls,
+
+   // Core (Blockcipher + Tools + SelfTest)
+
   uAES256,               // Basis: Typen + Hilfsfunktionen (UTF8, Hex, Padding, KeySchedule, Block-Funktionen)
-  uAES256_ECB,           // ECB-spezifisch (Encrypt/Decrypt ECB)
-  uAES256_CBC,           // CBC-spezifisch (Encrypt/Decrypt CBC)
   uSHA256,
-  uAES256_Container;     // Container + Random-IV
+  uAES256_Container,     // Container + Random-IV
+
+  // Modes (ECB/CBC) used by the GUI
+  uAES256_ECB,           // ECB-spezifisch (Encrypt/Decrypt ECB)
+  uAES256_CBC;           // CBC-spezifisch (Encrypt/Decrypt CBC)
+
 
 type
   { TAES_256_Lab }
   TAES_256_Lab = class(TForm)
+    NIST_CBC: TButton;
     CBCModus_Button: TButton;
-    Entschluesseln_Button: TButton;
 
     // getrennte Entschlüssel-Buttons
     entschluesseln_ECB: TButton;
@@ -38,6 +43,7 @@ type
 
     // Laden/Speichern Buttons
     LadenButton: TButton;
+    NIST_Test: TButton;
     Speichern: TButton;
     SpeichernButton: TButton;
 
@@ -62,9 +68,12 @@ type
     MemoPlain: TMemo;
 
     procedure CBCModus_ButtonClick(Sender: TObject);
+    procedure Entschluesseln_ButtonClick(Sender: TObject);
     procedure entschluesseln_ECBClick(Sender: TObject);
     procedure entschluesseln_CBCClick(Sender: TObject);
     procedure LadenClick(Sender: TObject);
+    procedure NIST_CBCClick(Sender: TObject);
+    procedure NIST_TestClick(Sender: TObject);
     procedure SpeichernClick(Sender: TObject);
 
     procedure Memo_controlChange(Sender: TObject);
@@ -128,8 +137,9 @@ begin
 
   StatusMemo.Clear;
   MemoCipher.Clear;
-
+  StatusMemo.Lines.Add('Warnung: ECB ist unsicher und nur zum Lernen gedacht.');
   StatusMemo.Lines.Add('--- Verschlüsselung (ECB) gestartet ---');
+  StatusMemo.Lines.Add('Hinweis: Passwort->Key erfolgt didaktisch via SHA-256 (nicht produktionssicher).');
 
   // 1) Klartext lesen
   PlainText := MemoPlain.Text;
@@ -235,6 +245,8 @@ begin
   MemoCipher.Clear;
 
   StatusMemo.Lines.Add('--- CBC-Verschlüsselung gestartet ---');
+   StatusMemo.Lines.Add('Hinweis: IV ist bei CBC zwingend und wird im Container gespeichert.');
+   StatusMemo.Lines.Add('Hinweis: Passwort->Key erfolgt didaktisch via SHA-256 (nicht produktionssicher).');
 
   // 1) Klartext lesen
   PlainText := MemoPlain.Text;
@@ -309,6 +321,11 @@ begin
 
   StatusMemo.Lines.Add('Cipher-Text wurde in FCipherBytes übernommen (MemoCipher ist nur Anzeige).');
   StatusMemo.Lines.Add('--- CBC-Verschlüsselung erfolgreich abgeschlossen ---');
+end;
+
+procedure TAES_256_Lab.Entschluesseln_ButtonClick(Sender: TObject);
+begin
+
 end;
 
 { ---------------------------------------------------------------------------
@@ -533,8 +550,226 @@ begin
   MemoCipher.Lines.Add(BytesToHex(FCipherBytes));
 end;
 
-procedure TAES_256_Lab.Selftest_ButtonClick(Sender: TObject);
+procedure TAES_256_Lab.NIST_CBCClick(Sender: TObject);
+{------------------------------------------------------------------------------
+  NIST-Test (AES-256 CBC, 1 Block) – Known Answer Test (KAT)
+
+  Was wird hier getestet?
+  - Dieser Button testet die AES-256 Verschlüsselung im CBC-Modus anhand
+    eines bekannten Referenzbeispiels (NIST-Testvektor).
+  - CBC bedeutet: Vor der Verschlüsselung wird der Klartextblock mit einem IV
+    (Initialisierungsvektor) per XOR verknüpft, erst dann wird der Block mit AES
+    verschlüsselt.
+
+  Verwendete Testdaten (als HEX-Strings)
+  - KEY_HEX: 32 Bytes (256 Bit) AES-Schlüssel
+  - IV_HEX:  16 Bytes (128 Bit) Initialisierungsvektor
+  - PT_HEX:  16 Bytes (128 Bit) Klartextblock
+  - CT_HEX:  16 Bytes (128 Bit) erwarteter Ciphertext (Referenz)
+
+  Ablauf (Schritt für Schritt)
+  1) Alle HEX-Strings werden in Byte-Arrays umgewandelt (HexToBytes).
+  2) Das IV wird als 16-Byte-Block (TByteArray16) vorbereitet.
+  3) Aus dem Key wird der AES-KeySchedule erzeugt:
+     - AES256InitKey(KeyBytes, Ctx)
+  4) CBC-Verschlüsselung für GENAU EINEN Block:
+     - CtActual := AES256EncryptCBC(PtBytes, IV, Ctx)
+     Das Ergebnis wird als HEX ausgegeben und mit CT_HEX verglichen.
+  5) Optional wird zur Kontrolle direkt wieder entschlüsselt:
+     - PtDecrypted := AES256DecryptCBC(CtActual, IV, Ctx)
+     Das Ergebnis muss wieder PT_HEX ergeben.
+
+  Warum ist dieser Test wichtig?
+  - Er zeigt, dass CBC (inklusive IV-Verwendung) für bekannte Referenzdaten
+    korrekt arbeitet. Damit kann man Implementierungsfehler sehr schnell finden.
+
+  Quelle der Testvektoren
+  - NIST SP 800-38A (Modes of Operation, u.a. CBC-Beispiele für AES-256)
+------------------------------------------------------------------------------}
 const
+  KEY_HEX = '603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4';
+  IV_HEX  = '000102030405060708090a0b0c0d0e0f';
+  PT_HEX  = '6bc1bee22e409f96e93d7e117393172a';
+  CT_HEX  = 'f58c4c04d6e5f1ba779eabfb5f7bfbd6';
+var
+  KeyBytes, PtBytes, CtExpected, CtActual, PtDecrypted: TBytes;
+  Ctx: TAES256Context;
+  IV: TByteArray16;
+
+  procedure BytesToBlock16(const Src: TBytes; out Dst: TByteArray16);
+  begin
+    if Length(Src) <> 16 then
+      raise Exception.Create('NIST-CBC-Test: Blocklänge ist nicht 16 Byte.');
+    Dst[0] := 0; // Compiler-Hinweis beruhigen
+    Move(Src[0], Dst[0], 16);
+  end;
+
+begin
+  StatusMemo.Clear;
+  MemoCipher.Clear;
+
+  StatusMemo.Lines.Add('--- NIST AES-256 CBC (Single Block) Test ---');
+
+  // Hex -> Bytes
+  KeyBytes   := HexToBytes(KEY_HEX);
+  PtBytes    := HexToBytes(PT_HEX);
+  CtExpected := HexToBytes(CT_HEX);
+
+  // IV vorbereiten
+  BytesToBlock16(HexToBytes(IV_HEX), IV);
+
+  // AES KeySchedule
+  AES256InitKey(KeyBytes, Ctx);
+
+  // CBC Encrypt (1 Block)
+  CtActual := AES256EncryptCBC(PtBytes, IV, Ctx);
+
+  // Ausgabe
+  MemoCipher.Lines.Add('Key:       ' + KEY_HEX);
+  MemoCipher.Lines.Add('IV:        ' + IV_HEX);
+  MemoCipher.Lines.Add('Plaintext: ' + PT_HEX);
+  MemoCipher.Lines.Add('Expected:  ' + CT_HEX);
+  MemoCipher.Lines.Add('Actual:    ' + BytesToHex(CtActual));
+
+  if SameText(BytesToHex(CtActual), CT_HEX) then
+    StatusMemo.Lines.Add('OK: CBC-Verschlüsselung stimmt mit NIST-Testvektor.')
+  else
+    StatusMemo.Lines.Add('FEHLER: CBC-Ausgabe weicht vom NIST-Testvektor ab!');
+
+  // Optional: CBC Decrypt (zur Kontrolle zurück)
+  PtDecrypted := AES256DecryptCBC(CtActual, IV, Ctx);
+  MemoCipher.Lines.Add('Decrypted: ' + BytesToHex(PtDecrypted));
+
+  if SameText(BytesToHex(PtDecrypted), PT_HEX) then
+    StatusMemo.Lines.Add('OK: CBC-Entschlüsselung liefert wieder den Klartext.')
+  else
+    StatusMemo.Lines.Add('FEHLER: CBC-Entschlüsselung liefert NICHT den Klartext.');
+end;
+
+procedure TAES_256_Lab.NIST_TestClick(Sender: TObject);
+    {------------------------------------------------------------------------------
+  NIST-Test (AES-256 Single-Block / Known Answer Test)
+
+  Was wird hier getestet?
+  - Dieser Button führt einen sogenannten "Known Answer Test" (KAT) aus.
+    Dabei werden feste, bekannte Testdaten (Key, Plaintext und erwarteter
+    Ciphertext) verwendet, die in vielen Referenzen (NIST-Testvektoren)
+    veröffentlicht sind.
+    Testvektoren-Quelle: NIST (CAVP AES Known Answer Tests) und NIST SP 800-38A / FIPS 197.
+
+  Ablauf (Schritt für Schritt)
+  1) Wir definieren die Testwerte als HEX-Strings:
+     - KEY_HEX:    32 Bytes (256 Bit) AES-Schlüssel
+     - PT_HEX:     16 Bytes (128 Bit) Klartext-Block
+     - CT_HEX:     16 Bytes (128 Bit) erwarteter Ciphertext
+
+  2) Die HEX-Strings werden in Byte-Arrays umgewandelt (HexToBytes).
+
+  3) Der Klartext wird als 16-Byte-Block (TByteArray16) vorbereitet.
+
+  4) AES-KeySchedule wird aufgebaut:
+     - AES256InitKey(KeyBytes, Ctx)
+
+  5) Es wird exakt EIN Block AES-256 verschlüsselt (ohne Modus wie CBC/ECB-Loop):
+     - AES256EncryptBlock(InBlock, OutBlock, Ctx)
+
+     Hinweis:
+     Der Begriff "ECB" taucht bei vielen Testvektoren auf, weil ein einzelner
+     Block ohne Verkettung dem ECB-Fall entspricht. Für diesen Test ist nur
+     wichtig: "Single Block rein -> Single Block raus".
+
+  6) Das Ergebnis (Actual) wird wieder als HEX ausgegeben und mit dem
+     erwarteten Wert (Expected) verglichen.
+     - Wenn gleich: OK (AES-Kern arbeitet korrekt für diesen Testvektor)
+     - Wenn ungleich: Fehler (Implementierung oder Datenumwandlung prüfen)
+
+  Warum ist dieser Test wichtig?
+  - Kryptografie testet man nicht "nach Gefühl".
+    Der Test zeigt sofort, ob der AES-Kern für bekannte Referenzwerte stimmt.
+------------------------------------------------------------------------------}
+   const
+  KEY_HEX = '603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4';
+  PT_HEX  = '6bc1bee22e409f96e93d7e117393172a';
+  CT_HEX  = 'f3eed1bdb5d2a03c064b5a7e3db181f8';
+var
+  KeyBytes, PtBytes, CtExpected, CtActual: TBytes;
+  Ctx: TAES256Context;
+  InBlock, OutBlock: TByteArray16;
+
+  procedure BytesToBlock16(const Src: TBytes; out Dst: TByteArray16);
+  begin
+    if Length(Src) <> 16 then
+      raise Exception.Create('NIST-Test: Blocklänge ist nicht 16 Byte.');
+    Dst[0] := 0; // Compiler-Hinweis beruhigen
+    Move(Src[0], Dst[0], 16);
+  end;
+
+  function Block16ToBytes(const B: TByteArray16): TBytes;
+  begin
+    result:=nil;
+    SetLength(Result, 16);
+    Move(B[0], Result[0], 16);
+  end;
+
+begin
+  StatusMemo.Clear;
+  MemoCipher.Clear;
+
+  StatusMemo.Lines.Add('--- NIST AES-256 ECB (Single Block) Test ---');
+
+  // Hex -> Bytes
+  KeyBytes   := HexToBytes(KEY_HEX);
+  PtBytes    := HexToBytes(PT_HEX);
+  CtExpected := HexToBytes(CT_HEX);
+
+  // Bytes -> 16-Byte Block
+  BytesToBlock16(PtBytes, InBlock);
+
+  // AES Core
+  AES256InitKey(KeyBytes, Ctx);
+  AES256EncryptBlock(InBlock, OutBlock, Ctx);
+
+  CtActual := Block16ToBytes(OutBlock);
+
+  // Ausgabe
+  MemoCipher.Lines.Add('Key:       ' + KEY_HEX);
+  MemoCipher.Lines.Add('Plaintext: ' + PT_HEX);
+  MemoCipher.Lines.Add('Expected:  ' + CT_HEX);
+  MemoCipher.Lines.Add('Actual:    ' + BytesToHex(CtActual));
+
+ if SameText(BytesToHex(CtActual), CT_HEX) then
+    StatusMemo.Lines.Add('OK: AES-256 Blocktest bestanden.')
+  else
+    StatusMemo.Lines.Add('FEHLER: Ausgabe weicht vom NIST-Testvektor ab!');
+end;
+
+
+procedure TAES_256_Lab.Selftest_ButtonClick(Sender: TObject);
+var
+  Report: string;
+  Ok: Boolean;
+begin
+  StatusMemo.Clear;
+  MemoCipher.Clear;
+
+  StatusMemo.Lines.Add('--- AES-256 Selftest gestartet ---');
+
+  Report := '';
+  Ok := AES256SelfTest(Report);
+
+  // Report ins Memo (für Lernzwecke)
+  MemoCipher.Lines.Add(Report);
+
+  if Ok then
+    StatusMemo.Lines.Add('--- AES-256 Selftest ERFOLGREICH abgeschlossen ---')
+  else
+    StatusMemo.Lines.Add('--- AES-256 Selftest FEHLGESCHLAGEN: Implementierung prüfen! ---');
+end;
+
+
+
+
+{const
   TestKey256: array[0..31] of Byte = (
     $60,$3D,$EB,$10,$15,$CA,$71,$BE,$2B,$73,$AE,$F0,$85,$7D,$77,$81,
     $1F,$35,$2C,$07,$3B,$61,$08,$D7,$2D,$98,$10,$A3,$09,$14,$DF,$F4
@@ -644,11 +879,14 @@ begin
   else
     StatusMemo.Lines.Add('--- AES-256 Selftest FEHLGESCHLAGEN: Implementierung prüfen! ---');
 end;
-
+}
 procedure TAES_256_Lab.Memo_controlChange(Sender: TObject);
 begin
   // optional: später Tabs/StatusBar synchronisieren
 end;
+
+
+
 
 procedure TAES_256_Lab.FormCreate(Sender: TObject);
 begin

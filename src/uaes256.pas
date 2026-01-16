@@ -64,6 +64,13 @@ type
     RoundKeys: TAESRoundKeyArray;     // Array aller Roundkeys für die einzelnen Runden
   end;
 
+const
+  AES_BLOCK_SIZE = 16;
+  AES_NB = 4;         // Number of columns (state width)
+  AES_NK_256 = 8;     // Key length in 32-bit words for AES-256
+  AES_NR_256 = 14;    // Number of rounds for AES-256
+
+
 { High-Level-Hilfsfunktionen (ohne eigentliche AES-Mathematik) }
 
 function StringToBytesUTF8(const S: string): TBytes;
@@ -107,19 +114,26 @@ procedure AES256DecryptBlock(const InBlock: TByteArray16; out OutBlock: TByteArr
   const Context: TAES256Context);
   // Entschlüsselt genau einen 16-Byte-Block mit AES-256
 
-function AES256EncryptECB(const PlainData: TBytes; const Context: TAES256Context): TBytes;
+function AES256SelfTest(out Report: string): Boolean;
+  // Führt wenige bekannte Testvektoren (NIST KAT) aus und liefert True/False.
+  // Report enthält eine kurze Zusammenfassung für Log/Memo.
+
+
+function AES256EncryptECB_TEST(const PlainData: TBytes; const Context: TAES256Context): TBytes;
   // Verschlüsselt Daten im ECB-Modus (Daten müssen vorher gepaddet sein)
 
-function AES256DecryptECB(const CipherData: TBytes; const Context: TAES256Context): TBytes;
+function AES256DecryptECB_TEST(const CipherData: TBytes; const Context: TAES256Context): TBytes;
   // Entschlüsselt Daten im ECB-Modus
 
-function AES256EncryptCBC(const PlainData: TBytes; const IV: TByteArray16;
+function AES256EncryptCBC_TEST(const PlainData: TBytes; const IV: TByteArray16;
   const Context: TAES256Context): TBytes;
   // Verschlüsselt Daten im CBC-Modus (PlainData muss gepaddet sein)
 
-function AES256DecryptCBC(const CipherData: TBytes; const IV: TByteArray16;
+function AES256DecryptCBC_TEST(const CipherData: TBytes; const IV: TByteArray16;
   const Context: TAES256Context): TBytes;
   // Entschlüsselt Daten im CBC-Modus
+
+
 
 { AES State-Transformationen }
 
@@ -755,6 +769,119 @@ begin
     // Nach der Schleife enthält Result die konvertierten Bytes
     // Beispiel: "4A3F" → [74, 63]
   end;
+end;
+
+
+function AES256SelfTest(out Report: string): Boolean;
+{
+  ============================================================================
+  AES256SelfTest - Minimaler Selbsttest (NIST Known Answer Tests)
+  ----------------------------------------------------------------------------
+  Zweck:
+    - Schnelle Plausibilitätsprüfung, ob AES-Kern + Modi korrekt arbeiten
+    - Hilft Contributors beim Verifizieren ohne GUI
+
+  Hinweis:
+    Das ist kein vollständiger Kryptotest-Suite, aber ein guter "Smoke Test".
+  ============================================================================
+}
+  function EqualBytes(const A, B: TBytes): Boolean;
+  var
+    I: Integer;
+  begin
+    if Length(A) <> Length(B) then Exit(False);
+    for I := 0 to High(A) do
+      if A[I] <> B[I] then Exit(False);
+    Result := True;
+  end;
+
+  procedure BytesToBlock16(const Src: TBytes; out Dst: TByteArray16);
+  begin
+    if Length(Src) <> AES_BLOCK_SIZE then
+      raise Exception.Create('AES256SelfTest: Blocklänge ist nicht 16 Byte.');
+
+    Dst[0]:=0;        //<- nimmt dem Compiler den Hint
+
+    Move(Src[0], Dst[0], AES_BLOCK_SIZE);
+  end;
+
+  function Block16ToBytes(const Src: TByteArray16): TBytes;
+  begin
+    Result:=nil;
+    SetLength(Result, AES_BLOCK_SIZE);
+    Move(Src[0], Result[0], AES_BLOCK_SIZE);
+  end;
+
+var
+  Key, Plain, ExpECB, ExpCBC, GotECB, GotCBC, DecCBC: TBytes;
+  Ctx: TAES256Context;
+  InBlk, OutBlk, DecBlk: TByteArray16;
+  IV: TByteArray16;
+begin
+  Report := '';
+  Result := False;
+
+  // NIST SP 800-38A (bekannte Testwerte für AES-256)
+  Key   := HexToBytes('603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4');
+  Plain := HexToBytes('6bc1bee22e409f96e93d7e117393172a');
+
+  // AES-256 ECB (1. Block)
+  ExpECB := HexToBytes('f3eed1bdb5d2a03c064b5a7e3db181f8');
+
+  // AES-256 CBC (1. Block) mit IV = 000102...0F
+  BytesToBlock16(HexToBytes('000102030405060708090a0b0c0d0e0f'), IV);
+  ExpCBC := HexToBytes('f58c4c04d6e5f1ba779eabfb5f7bfbd6');
+
+  // Key Schedule
+  AES256InitKey(Key, Ctx);
+
+  // --- ECB Block Test ---
+  BytesToBlock16(Plain, InBlk);
+  AES256EncryptBlock(InBlk, OutBlk, Ctx);
+  GotECB := Block16ToBytes(OutBlk);
+
+  if EqualBytes(GotECB, ExpECB) then
+    Report := Report + 'ECB: OK' + LineEnding
+  else
+  begin
+    Report := Report + 'ECB: FAIL' + LineEnding +
+              '  expected: ' + BytesToHex(ExpECB) + LineEnding +
+              '  got     : ' + BytesToHex(GotECB) + LineEnding;
+    Exit(False);
+  end;
+
+  AES256DecryptBlock(OutBlk, DecBlk, Ctx);
+  if EqualBytes(Block16ToBytes(DecBlk), Plain) then
+    Report := Report + 'ECB decrypt: OK' + LineEnding
+  else
+  begin
+    Report := Report + 'ECB decrypt: FAIL' + LineEnding;
+    Exit(False);
+  end;
+
+  // --- CBC Test (1 Block) ---
+
+  GotCBC :=  AES256EncryptCBC_TEST(Plain, IV, Ctx);
+  if EqualBytes(GotCBC, ExpCBC) then
+    Report := Report + 'CBC: OK' + LineEnding
+  else
+  begin
+    Report := Report + 'CBC: FAIL' + LineEnding +
+              '  expected: ' + BytesToHex(ExpCBC) + LineEnding +
+              '  got     : ' + BytesToHex(GotCBC) + LineEnding;
+    Exit(False);
+  end;
+
+  DecCBC := AES256DecryptCBC_TEST(GotCBC, IV, Ctx);
+  if EqualBytes(DecCBC, Plain) then
+    Report := Report + 'CBC decrypt: OK' + LineEnding
+  else
+  begin
+    Report := Report + 'CBC decrypt: FAIL' + LineEnding;
+    Exit(False);
+  end;
+
+  Result := True;
 end;
 
 function PKCS7Pad(const Data: TBytes; BlockSize: Integer): TBytes;
@@ -1586,8 +1713,10 @@ var
 begin
   FillChar(LocalCtx, SizeOf(LocalCtx), 0);
 
-  if Length(Key) < 32 then
-    raise Exception.Create('AES256InitKey: Key muss mindestens 32 Bytes lang sein.');
+  // AES-256 erwartet exakt 32 Byte Schlüsselmaterial.
+  // (Für Lernzwecke ist es besser, hier strikt zu sein, damit keine stillen Kürzungen passieren.)
+  if Length(Key) <> 32 then
+    raise Exception.Create('AES256InitKey: Key muss genau 32 Bytes (256 Bit) lang sein.');
 
   for I := 0 to 7 do
   begin
@@ -1685,7 +1814,7 @@ begin
   StateToBlock(State, OutBlock);
 end;
 
-function AES256EncryptECB(const PlainData: TBytes; const Context: TAES256Context): TBytes;
+function AES256EncryptECB_TEST(const PlainData: TBytes; const Context: TAES256Context): TBytes;
 var
   DataLen: Integer;
   NumBlocks: Integer;
@@ -1722,7 +1851,7 @@ begin
   end;
 end;
 
-function AES256DecryptECB(const CipherData: TBytes; const Context: TAES256Context): TBytes;
+function AES256DecryptECB_TEST(const CipherData: TBytes; const Context: TAES256Context): TBytes;
 var
   DataLen: Integer;
   NumBlocks: Integer;
@@ -1767,7 +1896,7 @@ begin
     Block[I] := Block[I] xor Mask[I];
 end;
 
-function AES256EncryptCBC(const PlainData: TBytes; const IV: TByteArray16;
+function AES256EncryptCBC_TEST(const PlainData: TBytes; const IV: TByteArray16;
   const Context: TAES256Context): TBytes;
 var
   DataLen: Integer;
@@ -1808,7 +1937,7 @@ begin
   end;
 end;
 
-function AES256DecryptCBC(const CipherData: TBytes; const IV: TByteArray16;
+function AES256DecryptCBC_TEST(const CipherData: TBytes; const IV: TByteArray16;
   const Context: TAES256Context): TBytes;
 var
   DataLen: Integer;

@@ -10,8 +10,8 @@ uses
   athreads,
   {$ENDIF}
   Interfaces, // this includes the LCL widgetset
-  Forms, 
-AES_256_Lab_Main, uAES256, uSHA256, uAES256_ECB, uAES256_CBC, uAES256_Container
+  Forms, AES_256_Lab_Main, uAES256, uSHA256, uAES256_ECB, uAES256_CBC,
+  uAES256_Container, Fixis
   { you can add units after this };
 
 {$R *.res}

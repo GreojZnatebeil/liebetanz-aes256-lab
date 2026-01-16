@@ -15,6 +15,14 @@
       </XPManifest>
       <Icon Value="0"/>
     </General>
+    <VersionInfo>
+      <UseVersionInfo Value="True"/>
+      <AutoIncrementBuild Value="True"/>
+      <MinorVersionNr Value="1"/>
+      <BuildNr Value="18"/>
+      <Language Value="0407"/>
+      <StringTable CompanyName="Joerg Liebetanz"/>
+    </VersionInfo>
     <BuildModes>
       <Item Name="Default" Default="True"/>
     </BuildModes>
@@ -67,6 +75,11 @@
         <Filename Value="uaes256_container.pas"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="uAES256_Container"/>
+      </Unit>
+      <Unit>
+        <Filename Value="fixis.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="Fixis"/>
       </Unit>
     </Units>
   </ProjectOptions>
