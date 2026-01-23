@@ -3105,17 +3105,17 @@ function GFMul3(B: Byte): Byte;
       = (x^6 + x^4 + x + 1) × x + (x^6 + x^4 + x + 1)
       = x^7 + x^5 + x^2 + x + x^6 + x^4 + x + 1
       = x^7 + x^6 + x^5 + x^4 + x^2 + 1  (x und x heben sich auf in GF(2))
-      = 11110101 = 0xF5 ✓
+      = 11110101 = 0xF5
 
   VERWENDUNG IN MIXCOLUMNS:
 
-  Die MixColumns-Matrix enthält die Werte {2, 3, 1, 1}:
-```
+   Die MixColumns-Matrix enthält die Werte 2, 3, 1, 1:
+
   [ 2  3  1  1 ]
   [ 1  2  3  1 ]
   [ 1  1  2  3 ]
   [ 3  1  1  2 ]
-```
+
 
   GFMul3 wird für alle "3"-Einträge verwendet.
 
@@ -3187,7 +3187,7 @@ function GFMul4(B: Byte): Byte;
 
   VERWENDUNG IN INVMIXCOLUMNS:
 
-  Die InvMixColumns-Matrix enthält {9, 11, 13, 14}:
+  Die InvMixColumns-Matrix enthält [9, 11, 13, 14]:
   - GFMul9 = GFMul8 + GFMul1
   - GFMul11 = GFMul8 + GFMul2 + GFMul1
   - GFMul13 = GFMul8 + GFMul4 + GFMul1
@@ -3745,8 +3745,8 @@ procedure InvMixSingleColumn(var S0, S1, S2, S3: Byte);
   WARUM GRÖSSERE KOEFFIZIENTEN (9, 11, 13, 14)?
 
   Die inverse Matrix hat notwendigerweise größere Koeffizienten:
-  - Original: {1, 2, 3}
-  - Invers: {9, 11, 13, 14}
+  - Original: [1, 2, 3]
+  - Invers: [9, 11, 13, 14]
 
   Dies ist mathematisch unvermeidbar - die Inverse einer Matrix mit kleinen
   Einträgen hat oft größere Einträge. Trotzdem sind diese Werte noch klein
@@ -5678,52 +5678,741 @@ end;
 {$pop}    // Compiler-Hints wieder aktivieren
 
 procedure AES256EncryptBlock(const InBlock: TByteArray16; out OutBlock: TByteArray16;
+  {
+  ============================================================================
+  AES256EncryptBlock - Verschlüsselt einen einzelnen 16-Byte-Block mit AES-256
+  ============================================================================
+
+  ZWECK:
+  Verschlüsselt genau einen 16-Byte-Block (128 Bit) mit dem AES-256-Algorithmus.
+  Dies ist die Kern-Verschlüsselungsfunktion, die alle AES-Transformationen
+  in der korrekten Reihenfolge durchführt.
+
+  PARAMETER:
+  - InBlock: Der zu verschlüsselnde 16-Byte-Block (Plaintext)
+  - OutBlock: OUT-Parameter - enthält nach Ausführung den verschlüsselten Block (Ciphertext)
+  - Context: Der AES-256 Kontext mit allen 15 vorberechneten Rundenschlüsseln
+
+  RÜCKGABEWERT:
+  - Keiner (OutBlock wird direkt befüllt)
+
+  HINTERGRUND - Die AES-Blockchiffre:
+
+  AES ist eine BLOCKCHIFFRE:
+  - Arbeitet auf festen 128-Bit (16-Byte) Blöcken
+  - Eingabe: 16 Bytes Plaintext
+  - Ausgabe: 16 Bytes Ciphertext
+  - Gleiche Größe: Input und Output immer 16 Bytes
+
+  Für längere Nachrichten:
+  → Muss in 16-Byte-Blöcke aufgeteilt werden (mit Padding)
+  → Betriebsmodus wählen (ECB, CBC, CTR, GCM, ...)
+  → Diese Funktion verschlüsselt nur EINEN Block!
+
+  DER AES-256 ALGORITHMUS - Übersicht:
+
+  AES-256 besteht aus:
+  1. Initial Round (vor den eigentlichen Runden)
+  2. 13 Standard-Runden (Runden 1-13)
+  3. Final Round (Runde 14, ohne MixColumns)
+
+  Jede Standard-Runde (1-13) hat 4 Schritte:
+  - SubBytes (Nichtlinearität via S-Box)
+  - ShiftRows (Diffusion horizontal)
+  - MixColumns (Diffusion vertikal)
+  - AddRoundKey (Schlüssel-Integration)
+
+  Die finale Runde (14) hat nur 3 Schritte:
+  - SubBytes
+  - ShiftRows
+  - AddRoundKey (KEIN MixColumns!)
+
+  WARUM 14 RUNDEN BEI AES-256?
+
+  AES-128: 10 Runden
+  AES-192: 12 Runden
+  AES-256: 14 Runden ← Wir sind hier!
+
+  Mehr Runden = Mehr Sicherheit:
+  - Nach 4 Runden: Vollständige Diffusion erreicht
+  - 14 Runden: Große Sicherheitsmarge
+  - Schutz gegen bekannte und zukünftige Angriffe
+
+  Die zusätzlichen Runden bei AES-256 kompensieren den längeren
+  Schlüssel und bieten maximale Sicherheit.
+
+  DER ALGORITHMUS - Schritt für Schritt:
+```
+  State = InBlock  // Als 4×4 Matrix interpretieren
+
+  AddRoundKey(State, RoundKey[0])  // Initial Round
+
+  for Round = 1 to 13:              // Standard-Runden
+      SubBytes(State)
+      ShiftRows(State)
+      MixColumns(State)
+      AddRoundKey(State, RoundKey[Round])
+
+  SubBytes(State)                   // Final Round
+  ShiftRows(State)
+  AddRoundKey(State, RoundKey[14])
+  // Kein MixColumns in letzter Runde!
+
+  OutBlock = State
+```
+
+  WARUM KEIN MIXCOLUMNS IN DER LETZTEN RUNDE?
+
+  Dies ist eine bewusste Design-Entscheidung von Daemen und Rijmen:
+
+  1. VEREINFACHUNG:
+     → Ver- und Entschlüsselung werden symmetrischer
+     → Einfachere Implementierung
+
+  2. KEINE SICHERHEITSEINBUSSE:
+     → MixColumns vor dem letzten AddRoundKey würde keinen Vorteil bringen
+     → Der Angreifer sieht nur das Ergebnis NACH AddRoundKey
+     → Die Diffusion ist bereits nach 13 Runden vollständig
+
+  3. EFFIZIENZ:
+     → Spart eine MixColumns-Operation
+     → Besonders wichtig in Hardware-Implementierungen
+
+  DIE STATE-MATRIX:
+
+  Intern arbeitet AES mit einer 4×4 State-Matrix:
+
+  InBlock (linear, 16 Bytes):
+  [B0, B1, B2, B3, B4, B5, B6, B7, B8, B9, B10, B11, B12, B13, B14, B15]
+
+  State (Matrix, 4×4):
+       Col0  Col1  Col2  Col3
+  Row0  B0    B4    B8    B12
+  Row1  B1    B5    B9    B13
+  Row2  B2    B6    B10   B14
+  Row3  B3    B7    B11   B15
+
+  Die Spalten-weise Anordnung (Column-Major Order) ist wichtig für MixColumns!
+
+  AVALANCHE-EFFEKT:
+
+  Ein einzelnes geändertes Bit im Plaintext führt nach wenigen Runden zu:
+  - ~50% geänderten Bits im Ciphertext (statistisch)
+  - Dies nennt man "Avalanche-Effekt"
+
+  Beispiel:
+  Plaintext1: "Hello World....." → Ciphertext1: 7A3F2E...
+  Plaintext2: "Hallo World....." → Ciphertext2: D9C1B8...
+                 ↑ Ein Buchstabe             ↑ Komplett anders!
+
+  Nach 4 Runden ist dieser Effekt vollständig erreicht.
+
+  FUNKTIONSWEISE - Die Implementierung:
+
+  Die Funktion folgt exakt dem FIPS 197 Algorithmus:
+
+  1. BlockToState: Konvertiert linearen Block in 4×4 Matrix
+  2. AddRoundKey[0]: Initiale Schlüssel-Mischung
+  3. Schleife für Runden 1-13:
+     - SubBytesState: S-Box auf alle 16 Bytes
+     - ShiftRowsState: Zeilen rotieren
+     - MixColumnsState: Spalten mischen
+     - AddRoundKey[Round]: Rundenschlüssel XOR
+  4. Finale Runde (14):
+     - SubBytesState
+     - ShiftRowsState
+     - AddRoundKey[14]
+     - KEIN MixColumnsState!
+  5. StateToBlock: Konvertiert 4×4 Matrix zurück in linearen Block
+
+  BEISPIEL - NIST TESTVECTOR:
+
+  FIPS 197, Appendix C.3 enthält ein vollständiges AES-256 Beispiel:
+
+  Key (32 Bytes):
+  000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F
+
+  Plaintext (16 Bytes):
+  00112233445566778899AABBCCDDEEFF
+
+  Ciphertext (16 Bytes):
+  8EA2B7CA516745BFEAFC49904B496089
+
+  Dieser Testvector kann zur Verifikation verwendet werden!
+
+  PERFORMANCE:
+
+  Typische Zeiten auf moderner Hardware (ohne AES-NI):
+  - Eine Runde: ~50-100 Nanosekunden
+  - Komplette Verschlüsselung (14 Runden): ~700-1000 Nanosekunden
+
+  Mit Hardware-Beschleunigung (AES-NI):
+  - Komplette Verschlüsselung: ~10-20 Nanosekunden
+  - 50-100× schneller!
+
+  Moderne CPUs (Intel, AMD, ARM seit ~2010) haben AES-NI:
+  - AESENC Instruktion: Macht eine komplette Runde in 1 Taktzyklus
+  - AESENCLAST Instruktion: Finale Runde
+
+  SICHERHEITSASPEKTE:
+
+  1. TIMING-SICHERHEIT:
+     → Alle Operationen sind zeitkonstant (keine datenabhängigen Verzweigungen)
+     → Schutz gegen Timing-Angriffe
+
+  2. CACHE-TIMING:
+     → S-Box Lookups könnten Cache-Timing-Angriffe ermöglichen
+     → In sehr sicherheitskritischen Umgebungen: Bitslicing verwenden
+     → Oder Hardware-AES (AES-NI)
+
+  3. SIDE-CHANNEL:
+     → Diese Software-Implementierung ist NICHT gegen alle Side-Channel-
+       Angriffe geschützt (Power-Analysis, EM-Strahlung)
+     → Für höchste Sicherheit: Hardware-Module (HSM) verwenden
+
+  VERWENDUNG:
+```pascal
+  var
+    KeyBytes: TBytes;
+    Ctx: TAES256Context;
+    PlainBlock, CipherBlock: TByteArray16;
+  begin
+    // 1. Schlüssel vorbereiten
+    KeyBytes := SHA256(StringToBytesUTF8('Passwort'));
+    AES256InitKey(KeyBytes, Ctx);
+
+    // 2. Block vorbereiten (16 Bytes)
+    // ... PlainBlock füllen ...
+
+    // 3. Verschlüsseln
+    AES256EncryptBlock(PlainBlock, CipherBlock, Ctx);
+
+    // 4. CipherBlock enthält jetzt die verschlüsselten 16 Bytes
+  end;
+```
+
+  WICHTIG - Nur ein Block:
+
+  Diese Funktion verschlüsselt nur 16 Bytes!
+  Für längere Nachrichten:
+  - Padding anwenden (PKCS#7)
+  - Betriebsmodus wählen (ECB/CBC/...)
+  - AES256EncryptECB() oder AES256EncryptCBC() verwenden
+
+  DETERMINISMUS:
+
+  AES ist DETERMINISTISCH:
+  - Gleicher Plaintext + Gleicher Key = Immer gleicher Ciphertext
+  - Dies ist gewollt und korrekt!
+
+  Für echte Sicherheit:
+  → ECB-Modus vermeiden (zeigt Muster)
+  → CBC mit zufälligem IV verwenden
+  → Oder moderne Modi wie GCM, CTR
+
+  WEITERFÜHRENDE INFORMATIONEN:
+  - FIPS 197, Sektion 5.1: Cipher Algorithm (Verschlüsselung)
+  - FIPS 197, Figure 5: Cipher Pseudo-Code
+  - FIPS 197, Appendix C: Complete AES-256 Example mit allen Zwischenschritten
+  - "The Design of Rijndael" (Daemen & Rijmen), Kapitel 3: Cipher Specification
+  - AES-NI: "Intel Advanced Encryption Standard Instructions Set"
+
+  ============================================================================
+}
   const Context: TAES256Context);
 var
   State: TAESState;
   Round: Integer;
 begin
-  BlockToState(InBlock, State);
-  AddRoundKey(State, Context.RoundKeys[0]);
+  // -------------------------------------------------------------------------
+  // SCHRITT 1: Block → State (Lineare Darstellung → Matrix-Darstellung)
+  // -------------------------------------------------------------------------
+  // Der 16-Byte-Block wird in die 4×4 State-Matrix konvertiert
+  // Dies ist notwendig, da AES intern mit Matrizen arbeitet
+  BlockToState(InBlock, State);   // Die 4×4 State-Matrix für AES-Transformationen
+
+  // Nach diesem Schritt: State enthält die 16 Bytes in Column-Major Order
+  // State[Row, Col] kann nun für die AES-Transformationen verwendet werden
+
+  // -------------------------------------------------------------------------
+  // INITIAL ROUND: AddRoundKey mit RoundKey[0]
+  // -------------------------------------------------------------------------
+  // Vor der ersten "echten" Runde wird der initiale Rundenschlüssel
+  // mit dem State XOR-verknüpft
+  //
+  // Warum? Dies "versteckt" den Plaintext sofort unter dem Schlüssel
+  // Ohne diesen Schritt wäre die erste Runde ohne Schlüssel-Einfluss
+
+  AddRoundKey(State, Context.RoundKeys[0]);  // Laufvariable für die Runden-Schleife
+
+  // Nach diesem Schritt: State = Plaintext ⊕ RoundKey[0]
+  // Die Verschlüsselung hat begonnen!
+
+  // -------------------------------------------------------------------------
+  // STANDARD-RUNDEN: Runden 1 bis 13
+  // -------------------------------------------------------------------------
+  // Jede dieser 13 Runden führt alle 4 AES-Transformationen durch:
+  // SubBytes → ShiftRows → MixColumns → AddRoundKey
 
   for Round := 1 to 13 do
   begin
+     // -----------------------------------------------------------------------
+    // Transformation 1: SubBytes
+    // -----------------------------------------------------------------------
+    // Wendet die S-Box auf alle 16 Bytes der State-Matrix an
+    // Dies ist die EINZIGE nichtlineare Operation in AES
+    // Bringt Konfusion (komplexe Beziehung zwischen Input und Output)
+
     SubBytesState(State);
+
+    // Nach SubBytes: Jedes Byte wurde durch die S-Box ersetzt
+    // Nichtlinearität verhindert lineare Kryptoanalyse
+
+    // -----------------------------------------------------------------------
+    // Transformation 2: ShiftRows
+    // -----------------------------------------------------------------------
+    // Verschiebt die Zeilen der State-Matrix zyklisch nach links:
+    // - Zeile 0: Keine Verschiebung
+    // - Zeile 1: 1 Position nach links
+    // - Zeile 2: 2 Positionen nach links
+    // - Zeile 3: 3 Positionen nach links
+    // Bringt Diffusion horizontal (zwischen Spalten)
+
     ShiftRowsState(State);
+
+    // Nach ShiftRows: Bytes wurden zwischen Spalten verteilt
+    // Horizontale Diffusion ist hergestellt
+
+    // -----------------------------------------------------------------------
+    // Transformation 3: MixColumns
+    // -----------------------------------------------------------------------
+    // Mischt jede Spalte der State-Matrix durch Matrix-Multiplikation in GF(2^8)
+    // Jedes Byte einer Spalte beeinflusst alle anderen Bytes der Spalte
+    // Bringt Diffusion vertikal (innerhalb Spalten)
+
     MixColumnsState(State);
+
+     // Nach MixColumns: Bytes wurden innerhalb jeder Spalte vermischt
+    // Vertikale Diffusion ist hergestellt
+    // In Kombination mit ShiftRows: Vollständige 2D-Diffusion!
+
+    // -----------------------------------------------------------------------
+    // Transformation 4: AddRoundKey
+    // -----------------------------------------------------------------------
+    // XOR-Verknüpfung mit dem aktuellen Rundenschlüssel
+    // Dies ist die EINZIGE Stelle, wo der Schlüssel einfließt
+    // Bringt die Geheimhaltung in die Verschlüsselung
+
     AddRoundKey(State, Context.RoundKeys[Round]);
+
+    // Nach AddRoundKey: Rundenschlüssel ist in State "gemischt"
+    // Ende der aktuellen Runde
+
   end;
+  // Nach der Schleife:
+  // - 13 vollständige Runden wurden durchgeführt
+  // - State wurde 13× durch SubBytes → ShiftRows → MixColumns → AddRoundKey transformiert
+  // - Vollständige Diffusion und Konfusion ist erreicht
+  // - Jetzt folgt die finale Runde (Runde 14)
+
+  // -------------------------------------------------------------------------
+  // FINAL ROUND: Runde 14 (ohne MixColumns!)
+  // -------------------------------------------------------------------------
+  // Die letzte Runde ist speziell: Sie hat KEIN MixColumns
+  // Nur SubBytes → ShiftRows → AddRoundKey
+
+  // Transformation 1: SubBytes
 
   SubBytesState(State);
+
+   // Letzte S-Box-Substitution für maximale Nichtlinearität
+
+  // Transformation 2: ShiftRows
+
   ShiftRowsState(State);
+  // Letzte Zeilen-Verschiebung für finale Diffusion
+
+  // Transformation 3: AddRoundKey mit RoundKey[14]
+  // WICHTIG: Kein MixColumns vor diesem letzten AddRoundKey!
+
   AddRoundKey(State, Context.RoundKeys[14]);
 
+  // Nach der finalen Runde:
+  // - Alle 14 Runden sind abgeschlossen
+  // - State enthält den verschlüsselten Block
+  // - Bereit für Rück-Konvertierung in linearen Block
+
+  // -------------------------------------------------------------------------
+  // SCHRITT 2: State → Block (Matrix-Darstellung → Lineare Darstellung)
+  // -------------------------------------------------------------------------
+  // Die 4×4 State-Matrix wird zurück in einen linearen 16-Byte-Block konvertiert
+
   StateToBlock(State, OutBlock);
+
+  // Nach diesem Schritt:
+  // - OutBlock enthält die 16 verschlüsselten Bytes
+  // - Die Verschlüsselung ist abgeschlossen
+  // - OutBlock kann gespeichert, übertragen oder weiterverarbeitet werden
+
+  // GARANTIE:
+  // - OutBlock ist deterministisch (gleicher Input → gleicher Output)
+  // - OutBlock kann mit AES256DecryptBlock und gleichem Key zurück in InBlock
+  //   entschlüsselt werden
+  // - Ohne den richtigen Key ist OutBlock praktisch nicht zu entschlüsseln
+
 end;
 
 
 procedure AES256DecryptBlock(const InBlock: TByteArray16; out OutBlock: TByteArray16;
   const Context: TAES256Context);
+{
+  ============================================================================
+  AES256DecryptBlock - Entschlüsselt einen einzelnen 16-Byte-Block mit AES-256
+  ============================================================================
+
+  ZWECK:
+  Entschlüsselt genau einen 16-Byte-Block (128 Bit), der zuvor mit
+  AES256EncryptBlock verschlüsselt wurde. Dies ist die Kern-Entschlüsselungs-
+  funktion, die alle inversen AES-Transformationen in korrekter Reihenfolge
+  durchführt.
+
+  PARAMETER:
+  - InBlock: Der zu entschlüsselnde 16-Byte-Block (Ciphertext)
+  - OutBlock: OUT-Parameter - enthält nach Ausführung den entschlüsselten Block (Plaintext)
+  - Context: Der AES-256 Kontext mit allen 15 vorberechneten Rundenschlüsseln
+            (GLEICHER Context wie bei Verschlüsselung!)
+
+  RÜCKGABEWERT:
+  - Keiner (OutBlock wird direkt befüllt)
+
+  HINTERGRUND - Die inverse Cipher:
+
+  AES-Entschlüsselung ist die mathematische UMKEHRUNG der Verschlüsselung:
+  - Jede Operation wird durch ihre Inverse ersetzt
+  - Die Reihenfolge wird umgekehrt
+  - Die Rundenschlüssel werden rückwärts verwendet
+
+  Für alle Blöcke P gilt:
+  AES256DecryptBlock(AES256EncryptBlock(P)) = P
+
+  Dies ist fundamental - ohne perfekte Umkehrbarkeit könnte man
+  verschlüsselte Daten nicht wiederherstellen!
+
+  DER INVERSE ALGORITHMUS - Übersicht:
+
+  AES-256 Entschlüsselung besteht aus:
+  1. Initial Round (mit RoundKey[14])
+  2. 13 Standard-Runden (rückwärts: Runden 13-1)
+  3. Final Round (mit RoundKey[0])
+
+  Jede Standard-Runde (13-1) hat 4 Schritte:
+  - InvShiftRows (inverse Zeilen-Verschiebung)
+  - InvSubBytes (inverse S-Box)
+  - AddRoundKey (GLEICH wie bei Verschlüsselung!)
+  - InvMixColumns (inverse Spalten-Mischung)
+
+  Die finale Runde hat nur 3 Schritte:
+  - InvShiftRows
+  - InvSubBytes
+  - AddRoundKey
+  - KEIN InvMixColumns (spiegelnd zur Verschlüsselung)
+
+  REIHENFOLGE - Verschlüsselung vs. Entschlüsselung:
+
+  VERSCHLÜSSELUNG (Forward):
+```
+  AddRoundKey(RoundKey[0])
+  for Round = 1 to 13:
+      SubBytes
+      ShiftRows
+      MixColumns
+      AddRoundKey(RoundKey[Round])
+  SubBytes
+  ShiftRows
+  AddRoundKey(RoundKey[14])
+```
+
+  ENTSCHLÜSSELUNG (Inverse):
+```
+  AddRoundKey(RoundKey[14])          ← Startet mit letztem Key!
+  for Round = 13 downto 1:           ← Rückwärts!
+      InvShiftRows                    ← Inverse Operationen
+      InvSubBytes
+      AddRoundKey(RoundKey[Round])
+      InvMixColumns
+  InvShiftRows
+  InvSubBytes
+  AddRoundKey(RoundKey[0])           ← Endet mit erstem Key!
+```
+
+  WICHTIGE BEOBACHTUNG:
+
+  AddRoundKey ist seine EIGENE Inverse!
+  → AddRoundKey(AddRoundKey(State, Key), Key) = State
+  → Wegen der XOR-Eigenschaft: A ⊕ B ⊕ B = A
+  → Deshalb ist AddRoundKey in beiden Richtungen gleich
+
+  Alle anderen Operationen haben explizite Inverse:
+  - SubBytes ↔ InvSubBytes
+  - ShiftRows ↔ InvShiftRows
+  - MixColumns ↔ InvMixColumns
+
+  WARUM GLEICHER CONTEXT?
+
+  Die Rundenschlüssel sind für Ver- und Entschlüsselung GLEICH:
+  - Context.RoundKeys[0..14] bleiben unverändert
+  - Nur die VERWENDUNGSREIHENFOLGE ist umgekehrt
+
+  Dies ist ein elegantes Feature von AES:
+  → Gleicher Key Schedule für beide Richtungen
+  → Spart Speicher und Rechenzeit
+  → Vereinfacht Implementierung
+
+  SYMMETRIE:
+
+  Verschlüsselung und Entschlüsselung sind nahezu symmetrisch:
+  - Gleiche Anzahl Runden (14)
+  - Gleiche Rundenschlüssel (rückwärts verwendet)
+  - Inverse statt normale Transformationen
+  - Gleiche Struktur und Komplexität
+
+  BEISPIEL - NIST TESTVECTOR (Rückwärts):
+
+  Ciphertext (16 Bytes):
+  8EA2B7CA516745BFEAFC49904B496089
+
+  Key (32 Bytes):
+  000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F
+
+  Plaintext (16 Bytes):
+  00112233445566778899AABBCCDDEEFF
+
+  Mit AES256DecryptBlock muss der Ciphertext zurück in Plaintext
+  entschlüsselt werden!
+
+  PERFORMANCE:
+
+  Entschlüsselung ist etwas langsamer als Verschlüsselung:
+  - InvMixColumns ist aufwendiger als MixColumns (~1.5-2× langsamer)
+  - InvSubBytes gleich schnell wie SubBytes (Lookup-Tabelle)
+  - InvShiftRows gleich schnell wie ShiftRows
+
+  Typisch: Entschlüsselung ~10-20% langsamer als Verschlüsselung
+
+  Mit Hardware-Beschleunigung (AES-NI):
+  - AESDEC Instruktion: Eine inverse Runde
+  - AESDECLAST Instruktion: Finale inverse Runde
+  - Fast gleich schnell wie Verschlüsselung
+
+  FEHLERFORTPFLANZUNG:
+
+  Ein Bit-Fehler im Ciphertext führt zu:
+  - ~50% Bit-Fehler im entschlüsselten Plaintext (bei diesem Block)
+  - Im ECB-Modus: Nur dieser Block ist betroffen
+  - Im CBC-Modus: Dieser Block + nächster Block betroffen
+
+  Dies ist normal und gewollt - AES hat starke Diffusion!
+
+  FALSCHES PASSWORT:
+
+  Wenn mit falschem Passwort (→ falscher Key) entschlüsselt wird:
+  - Die Entschlüsselung "funktioniert" technisch
+  - ABER: Das Ergebnis ist zufälliger "Müll"
+  - PKCS7-Padding wird ungültig sein
+  - Erkennung über Padding-Validierung möglich
+
+  Beispiel:
+  Richtiger Key: "Passwort123"
+  Falscher Key: "Password123"
+  → Entschlüsseltes Ergebnis: Zufällige Bytes, ungültiges Padding
+
+  VERWENDUNG:
+```pascal
+  var
+    KeyBytes: TBytes;
+    Ctx: TAES256Context;
+    CipherBlock, PlainBlock: TByteArray16;
+  begin
+    // 1. Gleicher Schlüssel wie bei Verschlüsselung!
+    KeyBytes := SHA256(StringToBytesUTF8('Passwort'));
+    AES256InitKey(KeyBytes, Ctx);
+
+    // 2. CipherBlock enthält verschlüsselte Daten
+    // ... (z.B. von Datei gelesen)
+
+    // 3. Entschlüsseln
+    AES256DecryptBlock(CipherBlock, PlainBlock, Ctx);
+
+    // 4. PlainBlock enthält jetzt die entschlüsselten 16 Bytes
+  end;
+```
+
+  DEBUGGING-TIPP:
+
+  Test für Korrektheit:
+```pascal
+  var
+    Original, Encrypted, Decrypted: TByteArray16;
+  begin
+    // Original-Block erzeugen
+    for I := 0 to 15 do
+      Original[I] := Random(256);
+
+    // Verschlüsseln
+    AES256EncryptBlock(Original, Encrypted, Ctx);
+
+    // Entschlüsseln
+    AES256DecryptBlock(Encrypted, Decrypted, Ctx);
+
+    // Vergleichen - sollte identisch sein!
+    for I := 0 to 15 do
+      if Decrypted[I] <> Original[I] then
+        WriteLn('FEHLER: Entschlüsselung ist nicht korrekt!');
+  end;
+```
+
+  SICHERHEITSASPEKT:
+
+  Die Entschlüsselung sollte die gleichen Timing-Eigenschaften haben
+  wie die Verschlüsselung:
+  - Keine datenabhängigen Verzweigungen
+  - Zeitkonstante Operationen
+  - Schutz gegen Timing-Angriffe
+
+  Unsere Implementierung erfüllt dies (bis auf Cache-Timing bei S-Box).
+
+  WEITERFÜHRENDE INFORMATIONEN:
+  - FIPS 197, Sektion 5.3: Inverse Cipher Algorithm
+  - FIPS 197, Figure 12: Inverse Cipher Pseudo-Code
+  - FIPS 197, Appendix C: Complete Examples mit Entschlüsselung
+  - "The Design of Rijndael", Kapitel 4: Inverse Cipher Details
+  - NIST: "Modes of Operation" - Fehlerfortpflanzung in verschiedenen Modi
+
+  ============================================================================
+}
+
 var
-  State: TAESState;
-  Round: Integer;
+  State: TAESState;    // Die 4×4 State-Matrix für AES-Transformationen
+  Round: Integer;      // Laufvariable für die Runden-Schleife (rückwärts!)
 begin
+  // -------------------------------------------------------------------------
+  // SCHRITT 1: Block → State (Lineare Darstellung → Matrix-Darstellung)
+  // -------------------------------------------------------------------------
+  // Der 16-Byte Ciphertext-Block wird in die 4×4 State-Matrix konvertiert
+
   BlockToState(InBlock, State);
+  // Nach diesem Schritt: State enthält den verschlüsselten Block
+  // Bereit für die inversen Transformationen
+
+  // -------------------------------------------------------------------------
+  // INITIAL ROUND: AddRoundKey mit RoundKey[14]
+  // -------------------------------------------------------------------------
+  // Die Entschlüsselung startet mit dem LETZTEN Rundenschlüssel
+  // Dies kehrt den letzten AddRoundKey-Schritt der Verschlüsselung um
+
   AddRoundKey(State, Context.RoundKeys[14]);
 
-  for Round := 13 downto 1 do
+  // Nach diesem Schritt: State = Ciphertext ⊕ RoundKey[14]
+  // Die Entschlüsselung hat begonnen!
+
+  // -------------------------------------------------------------------------
+  // STANDARD-RUNDEN: Runden 13 bis 1 (RÜCKWÄRTS!)
+  // -------------------------------------------------------------------------
+  // Jede dieser 13 Runden führt alle 4 inversen AES-Transformationen durch:
+  // InvShiftRows → InvSubBytes → AddRoundKey → InvMixColumns
+  //
+  // WICHTIG: Die Reihenfolge ist umgekehrt zur Verschlüsselung!
+
+
+
+  for Round := 13 downto 1 do    // RÜCKWÄRTS von 13 bis 1!
   begin
+
     InvShiftRowsState(State);
+
+   // Nach InvShiftRows: Die Zeilen-Verschiebung wurde rückgängig gemacht
+
+   // -----------------------------------------------------------------------
+   // Transformation 2: InvSubBytes
+   // -----------------------------------------------------------------------
+   // Wendet die inverse S-Box auf alle 16 Bytes an
+   // Kehrt SubBytes um
+   // Verwendet AES_INV_SBOX statt AES_SBOX
+
     InvSubBytesState(State);
+
+    // Nach InvSubBytes: Die S-Box-Substitution wurde rückgängig gemacht
+
+    // -----------------------------------------------------------------------
+    // Transformation 3: AddRoundKey
+    // -----------------------------------------------------------------------
+    // XOR mit dem aktuellen Rundenschlüssel
+    // WICHTIG: AddRoundKey ist seine eigene Inverse!
+    // Die Rundenschlüssel werden rückwärts verwendet
+
     AddRoundKey(State, Context.RoundKeys[Round]);
+
+    // Nach AddRoundKey: Rundenschlüssel wurde entfernt
+
+   // -----------------------------------------------------------------------
+   // Transformation 4: InvMixColumns
+   // -----------------------------------------------------------------------
+   // Kehrt die Spalten-Mischung um
+   // Verwendet die inverse MixColumns-Matrix
+   // Dies ist die aufwendigste Operation (GFMul9, GFMul11, GFMul13, GFMul14)
+
     InvMixColumnsState(State);
+
+   // Nach InvMixColumns: Die Spalten-Mischung wurde rückgängig gemacht
+   // Ende der aktuellen (inversen) Runde
+
   end;
+   // Nach der Schleife:
+   // - 13 vollständige inverse Runden wurden durchgeführt
+   // - State wurde 13× durch InvShiftRows → InvSubBytes → AddRoundKey → InvMixColumns
+    //   zurücktransformiert
+  // - Die meisten Verschlüsselungs-Transformationen sind rückgängig gemacht
+  // - Jetzt folgt die finale inverse Runde (entspricht Runde 0 bei Verschlüsselung)
+  // -------------------------------------------------------------------------
+  // FINAL ROUND: Mit RoundKey[0] (ohne InvMixColumns!)
+  // -------------------------------------------------------------------------
+  // Die letzte Runde ist speziell: Sie hat KEIN InvMixColumns
+  // Nur InvShiftRows → InvSubBytes → AddRoundKey
+  // Dies spiegelt die Verschlüsselung, wo die letzte Runde kein MixColumns hatte
+  // Transformation 1: InvShiftRows
 
   InvShiftRowsState(State);
-  InvSubBytesState(State);
-  AddRoundKey(State, Context.RoundKeys[0]);
+   // Letzte inverse Zeilen-Verschiebung
+   // Transformation 2: InvSubBytes
 
+
+  InvSubBytesState(State);
+
+  // Letzte inverse S-Box-Substitution
+// Transformation 3: AddRoundKey mit RoundKey[0]
+// Dies kehrt den allerersten AddRoundKey-Schritt der Verschlüsselung um
+// WICHTIG: Kein InvMixColumns vor diesem letzten AddRoundKey!
+
+  AddRoundKey(State, Context.RoundKeys[0]);
+   // Nach der finalen Runde:
+// - ALLE Verschlüsselungs-Transformationen sind rückgängig gemacht
+// - State enthält den entschlüsselten Block (Plaintext)
+// - Bereit für Rück-Konvertierung in linearen Block
+// -------------------------------------------------------------------------
+// SCHRITT 2: State → Block (Matrix-Darstellung → Lineare Darstellung)
+// -------------------------------------------------------------------------
+// Die 4×4 State-Matrix wird zurück in einen linearen 16-Byte-Block konvertiert
   StateToBlock(State, OutBlock);
+
+  // Nach diesem Schritt:
+// - OutBlock enthält die 16 entschlüsselten Bytes (Plaintext)
+// - Die Entschlüsselung ist abgeschlossen
+// - OutBlock sollte identisch mit dem Original-Plaintext sein
+// GARANTIE:
+// - Wenn InBlock durch AES256EncryptBlock mit gleichem Key erzeugt wurde,
+//   ist OutBlock identisch mit dem Original-Plaintext
+// - Mathematisch: DecryptBlock(EncryptBlock(P, K), K) = P
+// - Dies ist die fundamentale Eigenschaft einer Blockchiffre
 end;
 
 function AES256EncryptECB_TEST(const PlainData: TBytes; const Context: TAES256Context): TBytes;
@@ -5801,11 +6490,340 @@ begin
 end;
 
 procedure XorBlockInPlace(var Block: TByteArray16; const Mask: TByteArray16);
+{
+  ============================================================================
+  XorBlockInPlace - XOR-Verknüpfung zweier 16-Byte-Blöcke (in-place)
+  ============================================================================
+
+  ZWECK:
+  Führt eine bitweise XOR-Verknüpfung eines 16-Byte-Blocks mit einem Masken-
+  Block durch. Das Ergebnis wird direkt im ersten Block gespeichert (in-place
+  Modifikation). Diese Funktion wird hauptsächlich für CBC-Modus benötigt.
+
+  PARAMETER:
+  - Block: Der zu modifizierende Block (wird direkt verändert, call-by-reference)
+  - Mask: Der Masken-Block, mit dem XOR-verknüpft wird (bleibt unverändert)
+
+  RÜCKGABEWERT:
+  - Keiner (Block wird direkt modifiziert)
+
+  HINTERGRUND - XOR in der Kryptographie:
+
+  XOR (Exklusives ODER, ⊕) ist eine fundamentale Operation in der Kryptographie.
+  Sie hat einzigartige Eigenschaften, die sie ideal für Verschlüsselung machen.
+
+  DIE XOR OPERATION - Bitweise:
+
+  XOR arbeitet auf einzelnen Bits mit folgender Wahrheitstabelle:
+
+  A  B  A⊕B
+  0  0   0   (gleich → 0)
+  0  1   1   (unterschiedlich → 1)
+  1  0   1   (unterschiedlich → 1)
+  1  1   0   (gleich → 0)
+
+  Regel: Das Ergebnis ist 1, wenn die Bits UNTERSCHIEDLICH sind.
+
+  BEISPIEL AUF BYTE-EBENE:
+
+  Block[0] = 0xA5 = 10100101 (binär)
+  Mask[0]  = 0x3C = 00111100 (binär)
+
+  XOR Bit für Bit:
+    10100101  (Block[0])
+  ⊕ 00111100  (Mask[0])
+  ----------
+    10011001  = 0x99 (Ergebnis)
+
+  Block[0] wird zu 0x99
+
+  EIGENSCHAFTEN VON XOR:
+
+  1. KOMMUTATIV: A ⊕ B = B ⊕ A
+     → Reihenfolge egal
+
+  2. ASSOZIATIV: (A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)
+     → Klammerung egal
+
+  3. SELBST-INVERS: A ⊕ B ⊕ B = A
+     → Gleiche Operation rückwärts = vorwärts
+     → Fundamentale Eigenschaft für Verschlüsselung!
+
+  4. NEUTRALES ELEMENT: A ⊕ 0 = A
+     → XOR mit 0 ändert nichts
+
+  5. SELBST-LÖSCHEND: A ⊕ A = 0
+     → XOR eines Wertes mit sich selbst ergibt 0
+
+  WARUM SELBST-INVERS SO WICHTIG IST:
+
+  Die Selbst-Inverse Eigenschaft macht XOR perfekt für Verschlüsselung:
+
+  Verschlüsseln: Cipher = Plain ⊕ Key
+  Entschlüsseln: Plain = Cipher ⊕ Key (IDENTISCH!)
+
+  Beweis:
+  Cipher ⊕ Key = (Plain ⊕ Key) ⊕ Key
+                = Plain ⊕ (Key ⊕ Key)  (Assoziativität)
+                = Plain ⊕ 0            (Key ⊕ Key = 0)
+                = Plain                (A ⊕ 0 = A)
+
+  → Ver- und Entschlüsselung sind die GLEICHE Operation!
+
+  VERWENDUNG IM CBC-MODUS:
+
+  Diese Funktion ist essentiell für CBC (Cipher Block Chaining):
+
+  CBC-VERSCHLÜSSELUNG:
+```
+  C[0] = Encrypt(P[0] ⊕ IV)           ← XorBlockInPlace(P[0], IV)
+  C[1] = Encrypt(P[1] ⊕ C[0])         ← XorBlockInPlace(P[1], C[0])
+  C[2] = Encrypt(P[2] ⊕ C[1])         ← XorBlockInPlace(P[2], C[1])
+  ...
+```
+
+  CBC-ENTSCHLÜSSELUNG:
+```
+  P[0] = Decrypt(C[0]) ⊕ IV           ← XorBlockInPlace(P[0], IV)
+  P[1] = Decrypt(C[1]) ⊕ C[0]         ← XorBlockInPlace(P[1], C[0])
+  P[2] = Decrypt(C[2]) ⊕ C[1]         ← XorBlockInPlace(P[2], C[1])
+  ...
+```
+
+  XorBlockInPlace sorgt für die "Verkettung" (Chaining) der Blöcke!
+
+  WARUM CBC?
+
+  ECB (Electronic Codebook) hat ein Problem:
+  → Gleicher Plaintext-Block → Immer gleicher Ciphertext-Block
+  → Muster im Plaintext bleiben sichtbar
+  → Sehr unsicher!
+
+  CBC löst dies durch XOR mit vorherigem Block:
+  → Jeder Block beeinflusst den nächsten
+  → Gleiche Plaintext-Blöcke → Unterschiedliche Ciphertext-Blöcke
+  → Keine Muster erkennbar
+  → Viel sicherer!
+
+  BEISPIEL - VOLLSTÄNDIGER BLOCK:
+
+  Block (vor XOR):
+  [A5, 3C, 7F, 12, 8E, D4, 61, 9B, C2, 05, 47, E8, 1A, 6D, F3, 28]
+
+  Mask:
+  [5A, C3, 80, ED, 71, 2B, 9E, 64, 3D, FA, B8, 17, E5, 92, 0C, D7]
+
+  Block (nach XOR, Byte für Byte):
+  [FF, FF, FF, FF, FF, FF, FF, FF, FF, FF, FF, FF, FF, FF, FF, FF]
+
+  Interessant: Wenn Block und Mask komplementär sind (jedes Bit invertiert),
+  ist das Ergebnis alle 0xFF!
+
+  FUNKTIONSWEISE - Schleife über alle Bytes:
+
+  Die Implementierung ist sehr einfach:
+  1. Schleife von Byte 0 bis Byte 15
+  2. Für jedes Byte: Block[I] := Block[I] XOR Mask[I]
+  3. Fertig!
+
+  IN-PLACE MODIFIKATION:
+
+  "In-place" bedeutet: Das Ergebnis überschreibt den Eingabewert
+
+  Vorher: Block = [A, B, C, ...], Mask = [X, Y, Z, ...]
+  Nachher: Block = [A⊕X, B⊕Y, C⊕Z, ...], Mask = [X, Y, Z, ...] (unverändert)
+
+  Vorteil:
+  - Kein zusätzlicher Speicher nötig
+  - Schneller (keine Kopieroperationen)
+  - Effizienter Speicherverbrauch
+
+  Nachteil:
+  - Original-Block geht verloren
+  - Muss vorher kopiert werden, falls Original benötigt wird
+
+  PERFORMANCE:
+
+  Extrem schnell:
+  - 16 XOR-Operationen (eine pro Byte)
+  - XOR ist eine fundamentale CPU-Operation (1 Taktzyklus)
+  - Moderne CPUs können mehrere XORs parallel ausführen
+  - Gesamtzeit: Wenige Nanosekunden
+
+  OPTIMIERUNG IN MODERNEN IMPLEMENTIERUNGEN:
+
+  Statt byteweise könnte man auch wortweise XOR-en:
+```pascal
+  // Als 4× LongWord behandeln (4× 32-Bit = 128 Bit = 16 Bytes)
+  PLongWord(@Block[0])^ := PLongWord(@Block[0])^ xor PLongWord(@Mask[0])^;
+  PLongWord(@Block[4])^ := PLongWord(@Block[4])^ xor PLongWord(@Mask[4])^;
+  PLongWord(@Block[8])^ := PLongWord(@Block[8])^ xor PLongWord(@Mask[8])^;
+  PLongWord(@Block[12])^ := PLongWord(@Block[12])^ xor PLongWord(@Mask[12])^;
+```
+
+  Oder noch besser: Mit SIMD (SSE, AVX):
+```
+  // Als 128-Bit XMM-Register (mit SSE2)
+  xmm0 = load(Block)
+  xmm1 = load(Mask)
+  xmm0 = xmm0 XOR xmm1  // Eine einzige CPU-Instruktion!
+  store(Block, xmm0)
+```
+
+  Dies ist 4-16× schneller, aber komplexer zu implementieren.
+  Unsere Byte-weise Implementierung ist klar und portabel!
+
+  SYMMETRIE:
+
+  XorBlockInPlace ist selbst-invers wenn man zweimal mit der gleichen Mask arbeitet:
+```pascal
+  Original := Block;
+  XorBlockInPlace(Block, Mask);  // Block ⊕ Mask
+  XorBlockInPlace(Block, Mask);  // (Block ⊕ Mask) ⊕ Mask = Block
+  // Block ist wieder identisch mit Original!
+```
+
+  VERWENDUNG IN AES256EncryptCBC:
+```pascal
+  for BlockIndex := 0 to NumBlocks - 1 do
+  begin
+    // Block aus PlainData kopieren
+    for I := 0 to 15 do
+      InBlock[I] := PlainData[Offset + I];
+
+    // XOR mit vorherigem Cipherblock (oder IV beim ersten Block)
+    XorBlockInPlace(InBlock, PrevBlock);  // ← HIER!
+
+    // Jetzt verschlüsseln
+    AES256EncryptBlock(InBlock, OutBlock, Context);
+
+    // Für nächsten Block merken
+    PrevBlock := OutBlock;
+  end;
+```
+
+  VERWENDUNG IN AES256DecryptCBC:
+```pascal
+  for BlockIndex := 0 to NumBlocks - 1 do
+  begin
+    // Block aus CipherData kopieren
+    for I := 0 to 15 do
+      InBlock[I] := CipherData[Offset + I];
+
+    // Entschlüsseln
+    AES256DecryptBlock(InBlock, OutBlock, Context);
+
+    // XOR mit vorherigem Cipherblock (oder IV beim ersten Block)
+    XorBlockInPlace(OutBlock, PrevBlock);  // ← HIER!
+
+    // Original-Cipherblock für nächste Iteration merken
+    PrevBlock := InBlock;
+  end;
+```
+
+  SICHERHEITSASPEKT - Timing:
+
+  XOR ist vollständig zeitkonstant:
+  - Keine Verzweigungen
+  - Keine datenabhängigen Operationen
+  - Jedes Byte dauert exakt gleich lang
+  - Perfekter Schutz gegen Timing-Angriffe
+
+  ONE-TIME-PAD VERBINDUNG:
+
+  Die einfachste (und einzige mathematisch beweisbar sichere) Verschlüsselung
+  ist das One-Time-Pad (OTP), erfunden von Gilbert Vernam (1917):
+
+  Cipher = Plain ⊕ Key
+
+  Voraussetzung für perfekte Sicherheit:
+  - Key ist echt zufällig
+  - Key ist so lang wie die Nachricht
+  - Key wird nur einmal verwendet
+
+  XorBlockInPlace implementiert genau diese Operation!
+  AES ist im Grunde eine Methode, aus einem kurzen Key (32 Bytes) viele
+  "pseudo-zufällige" Masken zu erzeugen.
+
+  ALTERNATIVEN ZU XOR:
+
+  Warum nicht Addition oder Multiplikation?
+
+  ADDITION (mod 256):
+  - Nicht selbst-invers: Ver- und Entschlüsselung unterschiedlich
+  - Verschlüsseln: C = (P + K) mod 256
+  - Entschlüsseln: P = (C - K) mod 256  ← Unterschiedliche Operation!
+
+  MULTIPLIKATION:
+  - Nicht für alle Werte invertierbar (0 × K = 0)
+  - Komplexer zu berechnen
+  - Keine guten kryptographischen Eigenschaften
+
+  XOR ist optimal!
+
+  DEBUGGING-TIPP:
+
+  Test für Korrektheit:
+```pascal
+  var
+    Original, Block, Mask: TByteArray16;
+  begin
+    // Original speichern
+    Block := Original;
+
+    // Zweimal XOR mit gleicher Mask
+    XorBlockInPlace(Block, Mask);
+    XorBlockInPlace(Block, Mask);
+
+    // Block sollte wieder identisch mit Original sein!
+    for I := 0 to 15 do
+      if Block[I] <> Original[I] then
+        WriteLn('FEHLER: XorBlockInPlace ist nicht selbst-invers!');
+  end;
+```
+
+  WEITERFÜHRENDE INFORMATIONEN:
+  - FIPS 197, Sektion 6.2: CBC-Modus verwendet XOR
+  - NIST SP 800-38A: "Modes of Operation" - Detaillierte CBC-Beschreibung
+  - Boolean Algebra: XOR als Addition in GF(2)
+  - Claude Shannon (1949): One-Time-Pad und perfekte Sicherheit
+  - Gilbert Vernam (1917): Erfinder des One-Time-Pad
+  - "Applied Cryptography" (Bruce Schneier): Kapitel über XOR und Stream Ciphers
+
+  ============================================================================
+}
 var
-  I: Integer;
+  I: Integer;       // Laufvariable für die Schleife über alle 16 Bytes
 begin
+    // Schleife über alle 16 Bytes des Blocks
   for I := 0 to 15 do
+
+    // Bitweise XOR-Verknüpfung:
+    // Jedes Bit von Block[I] wird mit dem entsprechenden Bit von Mask[I] XOR-verknüpft
+    // Das Ergebnis überschreibt Block[I] direkt (in-place Modifikation)
+
     Block[I] := Block[I] xor Mask[I];
+
+    // Nach dieser Operation:
+    // - Block[I] enthält das XOR-Ergebnis
+    // - Mask[I] bleibt unverändert
+    // - Wenn vorher Block[I] = A und Mask[I] = B war, ist jetzt Block[I] = A ⊕ B
+
+
+  // Nach der Schleife:
+  // - ALLE 16 Bytes von Block wurden mit den entsprechenden Bytes von Mask XOR-verknüpft
+  // - Block = Block ⊕ Mask (bitweise für alle 128 Bits)
+  // - Diese Operation ist selbst-invers: Zweimaliges Anwenden stellt Original wieder her
+
+  // VERWENDUNG:
+  // - Hauptsächlich in CBC-Modus für Block-Verkettung
+  // - Auch nützlich für andere Betriebsmodi (CFB, OFB)
+  // - Grundlegende Operation in vielen kryptographischen Protokollen
+
+  // WICHTIGE EIGENSCHAFT:
+  // XorBlockInPlace(XorBlockInPlace(Block, Mask), Mask) = Original-Block
+  // Dies macht XOR ideal für Verschlüsselung!
+
 end;
 
 function AES256EncryptCBC_TEST(const PlainData: TBytes; const IV: TByteArray16;

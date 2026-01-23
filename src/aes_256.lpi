@@ -19,7 +19,7 @@
       <UseVersionInfo Value="True"/>
       <AutoIncrementBuild Value="True"/>
       <MinorVersionNr Value="1"/>
-      <BuildNr Value="25"/>
+      <BuildNr Value="32"/>
       <Language Value="0407"/>
       <StringTable CompanyName="Joerg Liebetanz"/>
     </VersionInfo>
