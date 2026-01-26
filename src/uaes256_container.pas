@@ -72,6 +72,21 @@ end;
 
 
 procedure WriteUInt32LE(var Buf: TBytes; Offset: Integer; Value: LongWord);
+  {
+  ============================================================================
+  WriteUInt32LE - Schreibt 32-Bit-Wert als Little-Endian in Byte-Array
+  ============================================================================
+
+  ZWECK:
+  Konvertiert einen 32-Bit-Wert in 4 Bytes (Little-Endian Format) und
+  schreibt sie an eine bestimmte Position im Byte-Array.
+
+  Little-Endian: Niedrigstwertiges Byte zuerst
+  Beispiel: 0x12345678 → [78, 56, 34, 12]
+
+  ============================================================================
+}
+
 begin
   Buf[Offset + 0] := Byte(Value and $FF);
   Buf[Offset + 1] := Byte((Value shr 8) and $FF);
@@ -80,6 +95,17 @@ begin
 end;
 
 function ReadUInt32LE(const Buf: TBytes; Offset: Integer): LongWord;
+{
+  ============================================================================
+  ReadUInt32LE - Liest 32-Bit-Wert aus Byte-Array (Little-Endian)
+  ============================================================================
+
+  ZWECK:
+  Rekonstruiert einen 32-Bit-Wert aus 4 Bytes im Little-Endian Format.
+  Umkehrung von WriteUInt32LE.
+
+  ============================================================================
+}
 begin
   Result :=
     LongWord(Buf[Offset + 0]) or
@@ -89,6 +115,19 @@ begin
 end;
 
 function ModeToByte(Mode: TAESContainerMode): Byte;
+{
+  ============================================================================
+  ModeToByte / ByteToMode - Konvertierung Modus ↔ Byte
+  ============================================================================
+
+  ZWECK:
+  Konvertiert zwischen TAESContainerMode Enum und Byte-Wert.
+  Für Speicherung im Container-Header.
+
+  MODE_ECB = 1, MODE_CBC = 2
+
+  ============================================================================
+}
 begin
   case Mode of
     acmECB: Result := MODE_ECB;
@@ -111,6 +150,30 @@ end;
 
 function BuildContainerBytes(const CipherBytes: TBytes;
   Mode: TAESContainerMode; const IV: TByteArray16): TBytes;
+{
+  ============================================================================
+  BuildContainerBytes - Erstellt Container-Byteformat
+  ============================================================================
+
+  ZWECK:
+  Verpackt verschlüsselte Daten in ein standardisiertes Container-Format:
+
+  CONTAINER-STRUKTUR (32 Bytes Header + Cipher):
+  [0..7]   Magic: "LAES256\0" (8 Bytes)
+  [8]      Version: 1
+  [9]      Modus: 1=ECB, 2=CBC
+  [10..11] Reserved: 0x00 0x00
+  [12..27] IV: 16 Bytes (bei ECB: Nullen)
+  [28..31] Cipher-Länge (Little-Endian)
+  [32..]   Verschlüsselte Daten
+
+  WARUM CONTAINER?
+  - Selbst-dokumentierend (enthält Modus und IV)
+  - Versionierung möglich
+  - Einfach erweiterbar
+
+  ============================================================================
+}
 const
   // Header:
   // Magic 8 + Version 1 + Mode 1 + Reserved 2 + IV 16 + CipherLen 4 = 32 Bytes
@@ -125,7 +188,7 @@ begin
   HeaderBytes := nil;
   Result := nil;
    LocalIV[0]:=0;
-  // IV IMMER definiert machen (Hint weg)
+  // IV definiert machen (bei ECB: Nullen)
 
 
   FillChar(LocalIV, SizeOf(LocalIV), 0);
@@ -138,17 +201,13 @@ if Mode = acmCBC then  LocalIV := IV;
 
   SetLength(HeaderBytes, HEADER_LEN);
 
-  // Magic
+  // Magic "LAES256\0"
   for I := 0 to 7 do
     HeaderBytes[I] := CONTAINER_MAGIC[I];
 
-  // Version
+ // Version, Modus, Reserved
   HeaderBytes[8] := Byte(CONTAINER_VERSION);
-
-  // Mode
   HeaderBytes[9] := ModeByte;
-
-  // Reserved (2 Bytes)
   HeaderBytes[10] := 0;
   HeaderBytes[11] := 0;
 
@@ -156,10 +215,10 @@ if Mode = acmCBC then  LocalIV := IV;
   for I := 0 to 15 do
     HeaderBytes[12 + I] := LocalIV[I];
 
-  // CipherLen (UInt32 LE)
+  // Cipher-Länge
   WriteUInt32LE(HeaderBytes, 28, CipherLen);
 
-  // Gesamt: Header + Cipher
+  // Zusammenfügen: Header + Cipher
   SetLength(Result, HEADER_LEN + Length(CipherBytes));
 
   // Header kopieren
@@ -172,6 +231,25 @@ end;
 
 function ParseContainerBytes(const Container: TBytes;
   out CipherBytes: TBytes; out Mode: TAESContainerMode; out IV: TByteArray16): Boolean;
+
+{
+  ============================================================================
+  ParseContainerBytes - Parst Container und extrahiert Daten
+  ============================================================================
+
+  ZWECK:
+  Liest Container-Format und extrahiert:
+  - Verschlüsselte Daten
+  - Modus (ECB/CBC)
+  - IV
+
+  VALIDIERUNG:
+  - Prüft Magic "LAES256\0"
+  - Prüft Version
+  - Prüft Längenplausibilität
+
+  ============================================================================
+}
 const
   HEADER_LEN = 32;
 var
@@ -225,6 +303,17 @@ begin
 end;
 
 function SaveContainerToFile(const FileName: string; const Container: TBytes): Boolean;
+ {
+  ============================================================================
+  SaveContainerToFile / LoadContainerFromFile - Datei-I/O
+  ============================================================================
+
+  ZWECK:
+  Speichert/Lädt Container-Bytes in/aus Datei.
+  Einfache Wrapper um TFileStream.
+
+  ============================================================================
+}
 var
   FS: TFileStream;
 begin

@@ -52,10 +52,10 @@ object AES_256_Lab: TAES_256_Lab
     TabOrder = 2
   end
   object Selftest_Button: TButton
-    Left = 160
+    Left = 168
     Height = 25
-    Top = 160
-    Width = 64
+    Top = 224
+    Width = 120
     Caption = 'Selftest'
     TabOrder = 3
     OnClick = Selftest_ButtonClick
@@ -141,7 +141,7 @@ object AES_256_Lab: TAES_256_Lab
   object entschluesseln_CBC: TButton
     Left = 296
     Height = 25
-    Top = 160
+    Top = 192
     Width = 139
     Caption = 'entschluesseln_CBC'
     TabOrder = 7
@@ -150,7 +150,7 @@ object AES_256_Lab: TAES_256_Lab
   object entschluesseln_ECB: TButton
     Left = 296
     Height = 25
-    Top = 192
+    Top = 160
     Width = 139
     Caption = 'entschluesseln_ECB'
     TabOrder = 8
@@ -166,28 +166,28 @@ object AES_256_Lab: TAES_256_Lab
     OnClick = SpeichernClick
   end
   object Laden: TButton
-    Left = 304
+    Left = 296
     Height = 25
     Top = 224
-    Width = 126
+    Width = 134
     Caption = 'Laden'
     TabOrder = 10
     OnClick = LadenClick
   end
   object NIST_Test: TButton
-    Left = 224
+    Left = 168
     Height = 25
     Top = 160
-    Width = 75
+    Width = 120
     Caption = 'NIST_Test'
     TabOrder = 11
     OnClick = NIST_TestClick
   end
   object NIST_CBC: TButton
-    Left = 224
+    Left = 168
     Height = 25
     Top = 192
-    Width = 75
+    Width = 120
     Caption = 'NIST_CBC'
     TabOrder = 12
     OnClick = NIST_CBCClick

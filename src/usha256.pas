@@ -58,12 +58,38 @@ implementation
 // --- Hilfsfunktionen für 32-Bit Operationen ---
 
 function ROTR(x: LongWord; n: LongWord): LongWord;
+{
+  ============================================================================
+  ROTR - Rotate Right (32-Bit Rechts-Rotation)
+  ============================================================================
+
+  ZWECK:
+  Rotiert ein 32-Bit-Wort um n Positionen nach rechts (zyklisch).
+  Fundamentale Operation für SHA-256.
+
+  BEISPIEL:
+  ROTR(10110011, 2) = 11101100
+  Die letzten 2 Bits wandern nach vorne.
+
+  ============================================================================
+}
 begin
   // Rechtsrotation: dreht die Bits nach rechts
   Result := (x shr n) or (x shl (32 - n));
 end;
 
 function SHR32(x: LongWord; n: LongWord): LongWord;
+{
+  ============================================================================
+  SHR32 - Logisches Rechts-Schieben (Shift Right)
+  ============================================================================
+
+  ZWECK:
+  Schiebt Bits nach rechts, füllt links mit Nullen auf.
+  Im Gegensatz zu ROTR gehen Bits verloren.
+
+  ============================================================================
+}
 begin
   // Logisches Rechts-Schieben
   Result := x shr n;
@@ -91,13 +117,33 @@ const
 
 // --- Verarbeitet einen 512-Bit Block ---
 procedure SHA256Transform(var State: TSHA256State; const Block: TSHA256Buffer);
+{
+  ============================================================================
+  SHA256Transform - Verarbeitet einen 512-Bit-Block
+  ============================================================================
+
+  ZWECK:
+  Kern-Funktion von SHA-256. Verarbeitet einen 512-Bit (64-Byte) Block
+  und aktualisiert den internen Zustand (8× 32-Bit Wörter).
+
+  HINTERGRUND:
+  SHA-256 wurde von der NSA entwickelt und 2001 von NIST standardisiert.
+  Es ist Teil der SHA-2 Familie und gilt als sicher.
+
+  DER ALGORITHMUS (vereinfacht):
+  1. Erweitere 16 Wörter auf 64 Wörter (Message Schedule)
+  2. 64 Runden mit Bit-Operationen und Addition
+  3. Ergebnis zum State addieren
+
+  ============================================================================
+}
 var
-  W: array[0..63] of LongWord;
-  a,b,c,d,e,f,g,h: LongWord;
-  t1, t2: LongWord;
+  W: array[0..63] of LongWord;      // Message Schedule (erweiterte Nachricht)
+  a,b,c,d,e,f,g,h: LongWord;        // Arbeitsvariablen
+  t1, t2: LongWord;                  // Temporäre Werte
   i: Integer;
 begin
-  // 1. 16 Wörter direkt aus dem Block einlesen
+  // 1. Erste 16 Wörter direkt aus Block einlesen (Big-Endian)
   for i := 0 to 15 do
     W[i] :=
       (LongWord(Block[4*i]) shl 24) or
@@ -105,7 +151,7 @@ begin
       (LongWord(Block[4*i+2]) shl 8) or
       (LongWord(Block[4*i+3]));
 
-  // 2. Restliche Wörter berechnen (Message schedule)
+   // 2. Restliche Wörter berechnen (Message Schedule)
   for i := 16 to 63 do
   begin
     W[i] :=
@@ -115,7 +161,7 @@ begin
       W[i-16];
   end;
 
-  // 3. Arbeitsvariablen laden
+  // 3. Arbeitsvariablen initialisieren
   a := State[0];
   b := State[1];
   c := State[2];
@@ -145,7 +191,7 @@ begin
     a := t1 + t2;
   end;
 
-  // 5. Ergebnis in den State zurückschreiben
+  // 5. Ergebnis zum State addieren (Diffusion)
   State[0] += a;
   State[1] += b;
   State[2] += c;
@@ -158,6 +204,29 @@ end;
 
 // --- Hauptfunktion ---
 function SHA256(const Data: TBytes): TBytes;
+{
+  ============================================================================
+  SHA256 - Berechnet SHA-256 Hash über beliebige Daten
+  ============================================================================
+
+  ZWECK:
+  Berechnet den SHA-256 Hash (256 Bit = 32 Bytes) über beliebige Eingabedaten.
+  SHA-256 ist eine kryptographische Hash-Funktion.
+
+  EIGENSCHAFTEN:
+  - Einweg-Funktion: Aus Hash kann man nicht auf Input schließen
+  - Kollisions-resistent: Praktisch unmöglich, zwei Inputs mit gleichem Hash zu finden
+  - Lawineneffekt: 1 Bit Änderung → ~50% Hash-Bits ändern sich
+
+  VERWENDUNG IN DIESEM PROJEKT:
+  Passwort → SHA-256 → 32-Byte AES-Schlüssel
+
+  SICHERHEIT:
+  SHA-256 gilt als sicher (Stand 2025). Keine praktischen Angriffe bekannt.
+  Für Passwort-Hashing: Besser PBKDF2, Argon2 oder bcrypt verwenden!
+
+  ============================================================================
+}
 var
   State: TSHA256State;                  // Interner Zustand mit 8 32-Bit-Werten
   Len: Int64;                           // Gesamtlänge der Daten in Bit
@@ -176,12 +245,12 @@ begin
   for i := 0 to 7 do                    // Schleife über die 8 State-Werte
     State[i] := H0[i];                  // Übernimmt die vordefinierten Initialwerte in den State
 
-
+{
   // 1. Startwerte setzen (Initial Hash Values H0..H7)
   for i := 0 to 7 do                    // Schleife über die 8 State-Werte
     State[i] := H0[i];                  // Übernimmt die vordefinierten Initialwerte in den State
-
-  // ----- Daten blockweise verarbeiten -----
+}
+  // 2. Daten blockweise verarbeiten (512-Bit Blöcke)
 
   i := 0;                               // Startindex im Eingabearray
   while (i + 64) <= Length(Data) do     // Solange noch mindestens 64 Bytes (ein voller Block) übrig sind
@@ -191,7 +260,7 @@ begin
     Inc(i, 64);                         // Erhöht den Index um 64, um den nächsten Block zu verarbeiten
   end;
 
-  // ----- Padding vorbereiten -----
+  // 3. Padding vorbereiten (FIPS 180-4)
 
   Len := Length(Data) * 8;              // Gesamtlänge der Originaldaten in Bit
 
@@ -208,7 +277,7 @@ begin
     FillChar(Buffer, SizeOf(Buffer),0); // Setzt den Puffer erneut auf 0 für den letzten Block
   end;
 
-  // ----- Länge in die letzten 8 Bytes schreiben (Big-Endian) -----
+   // 4. Länge in letzte 8 Bytes schreiben (Big-Endian)
 
   Buffer[63] := Len and $FF;            // Niedrigstwertiges Byte der Länge
   Buffer[62] := (Len shr 8) and $FF;    // Nächstes Byte
@@ -221,7 +290,7 @@ begin
 
   SHA256Transform(State, Buffer);       // Verarbeitet den letzten Block mit der Längenangabe
 
-  // ---- Ausgabe erzeugen (32 Byte Digest) ----
+   // 5. Ausgabe erzeugen (32 Bytes)
 
   SetLength(Result, 32);                // Reserviert 32 Bytes für den Hash-Wert (256 Bit)
   for i := 0 to 7 do                    // Schleife über die 8 32-Bit-Wörter im State

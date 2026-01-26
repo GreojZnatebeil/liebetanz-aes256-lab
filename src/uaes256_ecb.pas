@@ -793,7 +793,7 @@ begin
     // Nach dieser Schleife: InBlock enthält 16 Bytes Ciphertext
     // InBlock = CipherData[Offset .. Offset+15]
 
-     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Schritt 2: Block mit AES-256 entschlüsseln
     // -----------------------------------------------------------------------
     // Dies ist der Kern: Einzelner verschlüsselter Block wird entschlüsselt

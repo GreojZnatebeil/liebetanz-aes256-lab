@@ -35,6 +35,46 @@ function AES256DecryptCBC(const CipherData: TBytes; const IV: TByteArray16;
 implementation
 
 function AES256EncryptCBC(const PlainData: TBytes; const IV: TByteArray16;
+   {
+  ============================================================================
+  AES256EncryptCBC - Verschlüsselt Daten im CBC-Modus (Cipher Block Chaining)
+  ============================================================================
+
+  ZWECK:
+  Verschlüsselt Daten im CBC-Modus. CBC ist DEUTLICH sicherer als ECB, da
+  jeder Block mit dem vorherigen Ciphertext-Block XOR-verknüpft wird, bevor
+  er verschlüsselt wird. Dies verhindert Mustererkennung.
+
+  PARAMETER:
+  - PlainData: Zu verschlüsselnde Daten (muss vorher gepaddet sein!)
+  - IV: Initialization Vector (16 Bytes, sollte zufällig und einmalig sein!)
+  - Context: AES-256 Kontext mit Rundenschlüsseln
+
+  RÜCKGABEWERT:
+  - TBytes: Verschlüsselte Daten (gleiche Länge wie PlainData)
+
+  CBC-PRINZIP - Block Chaining:
+
+  C[0] = Encrypt(P[0] ⊕ IV)
+  C[1] = Encrypt(P[1] ⊕ C[0])
+  C[2] = Encrypt(P[2] ⊕ C[1])
+  ...
+
+  WICHTIG - Der IV (Initialization Vector):
+  - Muss 16 Bytes lang sein
+  - Sollte ZUFÄLLIG sein (kryptographisch sicher)
+  - Muss für jede Nachricht NEU sein
+  - Muss NICHT geheim sein (kann mit Ciphertext gespeichert werden)
+  - DARF NIEMALS mit gleichem Key wiederverwendet werden!
+
+  VORTEILE GEGENÜBER ECB:
+  - Gleiche Plaintext-Blöcke → Unterschiedliche Ciphertext-Blöcke
+  - Keine Mustererkennung möglich
+  - Jeder Block beeinflusst alle folgenden
+  - Standard für viele Anwendungen
+
+  ============================================================================
+}
   const Context: TAES256Context): TBytes;
 var
   DataLen: Integer;                     // Länge der Eingabedaten
@@ -87,6 +127,28 @@ end;
 
 function AES256DecryptCBC(const CipherData: TBytes; const IV: TByteArray16;
   const Context: TAES256Context): TBytes;
+{
+  ============================================================================
+  AES256DecryptCBC - Entschlüsselt Daten im CBC-Modus
+  ============================================================================
+
+  ZWECK:
+  Entschlüsselt CBC-verschlüsselte Daten. Verwendet den gleichen IV wie bei
+  der Verschlüsselung.
+
+  CBC-ENTSCHLÜSSELUNG:
+
+  P[0] = Decrypt(C[0]) ⊕ IV
+  P[1] = Decrypt(C[1]) ⊕ C[0]
+  P[2] = Decrypt(C[2]) ⊕ C[1]
+  ...
+
+  FEHLERFORTPFLANZUNG:
+  - Ein Bit-Fehler in C[i] betrifft P[i] komplett und ein Bit in P[i+1]
+  - Begrenzte Fehlerfortpflanzung (besser als Streaming-Modi)
+
+  ============================================================================
+}
 var
   DataLen: Integer;                     // Länge der Cipher-Daten
   NumBlocks: Integer;                   // Anzahl 16-Byte-Blöcke

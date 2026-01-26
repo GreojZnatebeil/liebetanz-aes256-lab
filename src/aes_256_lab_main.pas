@@ -111,105 +111,294 @@ implementation
 { TAES_256_Lab }
 
 procedure TAES_256_Lab.Verschluesseln_ButtonClick(Sender: TObject);
+{
+  ============================================================================
+  Verschluesseln_ButtonClick - ECB-Verschlüsselung (Button-Event-Handler)
+  ============================================================================
+
+  ZWECK:
+  Event-Handler für den "Verschlüsseln (ECB)"-Button. Führt eine komplette
+  AES-256-ECB-Verschlüsselung durch und zeigt alle Zwischenschritte an.
+
+  DIDAKTISCHER ANSATZ:
+  Diese Funktion ist bewusst ausführlich und zeigt jeden Schritt:
+  - Klartext einlesen
+  - UTF-8 Konvertierung
+  - PKCS#7 Padding
+  - Lehr-Test: Rundenkern (SubBytes+ShiftRows+MixColumns) auf Block 0
+  - Passwort → SHA-256 → AES-Key
+  - Key Schedule (Roundkeys generieren)
+  - ECB-Verschlüsselung
+  - Anzeige in Hex-Format
+
+  FÜR LEHRZWECKE:
+  Jeder Schritt wird im StatusMemo dokumentiert, damit Schüler den
+  Ablauf nachvollziehen können.
+
+  SICHERHEITSHINWEIS:
+  Dies ist LEHRCODE! ECB-Modus ist für Produktivsysteme NICHT geeignet.
+  Siehe Kommentare in uAES256_ECB.pas für Details.
+
+  ============================================================================
+}
 var
-  PlainText: string;
-  PlainBytes: TBytes;
-  PaddedBytes: TBytes;
-  HexText: string;
+  PlainText: string;           // Text, den der Benutzer in MemoPlain eingibt
+  PlainBytes: TBytes;           // Klartext als UTF-8-Byte-Array
+  PaddedBytes: TBytes;          // Klartext nach PKCS#7-Padding
+  HexText: string;              // Hex-Darstellung der gepaddeten Daten
 
-  Block: TByteArray16;
-  State: TAESState;
-  RoundBytes: TBytes;
-  HexRound: string;
+  Block: TByteArray16;         // Erster 16-Byte-Block für Lehr-Test
+  State: TAESState;            // AES-State-Matrix (4×4)
+  RoundBytes: TBytes;           // Block nach SubBytes+ShiftRows+MixColumns
+  HexRound: string;             // Hex-Darstellung des transformierten Blocks
 
-  KeyBytes: TBytes;
-  Ctx: TAES256Context;
-  CipherBytes: TBytes;
-  HexCipher: string;
+  KeyBytes: TBytes;            // AES-256 Key (32 Bytes)
+  Ctx: TAES256Context;         // Roundkeys (15 Rundenschlüssel)
+  CipherBytes: TBytes;         // Verschlüsselte Daten (ECB)
+  HexCipher: string;            // Hex-Darstellung der verschlüsselten Daten
 
-  I: Integer;
+  I: Integer;                   // Laufvariable für Schleifen
+
 begin
+   // -------------------------------------------------------------------------
+  // VORBEREITUNG: Alle dynamischen Arrays auf nil setzen
+  // -------------------------------------------------------------------------
+  // Dies ist defensive Programmierung - verhindert Zugriff auf nicht
+  // initialisierte Speicherbereiche
+
   RoundBytes   := nil;
   KeyBytes     := nil;
   CipherBytes  := nil;
   PaddedBytes  := nil;
   PlainBytes   := nil;
 
+  // -------------------------------------------------------------------------
+  // AUSGABE VORBEREITEN: Memos leeren
+  // -------------------------------------------------------------------------
+  // StatusMemo zeigt den Fortschritt, MemoCipher die Zwischenergebnisse
+
   StatusMemo.Clear;
   MemoCipher.Clear;
+   // Startmeldung für den Benutzer
   StatusMemo.Lines.Add('Warnung: ECB ist unsicher und nur zum Lernen gedacht.');
   StatusMemo.Lines.Add('--- Verschlüsselung (ECB) gestartet ---');
   StatusMemo.Lines.Add('Hinweis: Passwort->Key erfolgt didaktisch via SHA-256 (nicht produktionssicher).');
 
-  // 1) Klartext lesen
+
+  // -------------------------------------------------------------------------
+  // SCHRITT 1: Klartext aus dem Memo lesen
+  // -------------------------------------------------------------------------
+  // MemoPlain ist das Eingabefeld, in das der Benutzer den zu
+  // verschlüsselnden Text eingibt
+
   PlainText := MemoPlain.Text;
-  if PlainText = '' then
+  if PlainText = '' then    // Validierung: Wenn kein Text eingegeben wurde, Abbruch
   begin
     StatusMemo.Lines.Add('Hinweis: Kein Klartext in MemoPlain vorhanden, Vorgang abgebrochen.');
-    Exit;
+    Exit;                  // Frühzeitiger Ausstieg aus der Prozedur
   end;
 
-  // 2) String -> UTF-8-Bytes
+  // -------------------------------------------------------------------------
+  // SCHRITT 2: String nach UTF-8-Bytes umwandeln
+  // -------------------------------------------------------------------------
+  // AES arbeitet mit Bytes, nicht mit Strings. UTF-8 garantiert:
+  // - Plattformunabhängigkeit (Windows, Linux, Mac)
+  // - Korrekte Behandlung von Umlauten, Sonderzeichen, Emojis
+  // - Konsistente Byte-Darstellung des gleichen Textes
+
   PlainBytes := StringToBytesUTF8(PlainText);
   StatusMemo.Lines.Add('Klartext wurde in UTF-8-Bytes umgewandelt.');
 
-  // 3) PKCS#7 Padding
+  // -------------------------------------------------------------------------
+  // SCHRITT 3: PKCS#7-Padding anwenden
+  // -------------------------------------------------------------------------
+  // AES arbeitet nur mit 16-Byte-Blöcken. PKCS#7-Padding füllt die Daten
+  // auf ein Vielfaches von 16 Bytes auf.
+  //
+  // Beispiel: "Hallo" (5 Bytes) → 16 Bytes mit 11 Padding-Bytes (Wert 0x0B)
+  //
+  // WICHTIG: Auch wenn die Daten bereits ein Vielfaches von 16 sind,
+  // wird ein kompletter Padding-Block (16 Bytes) hinzugefügt!
+  // → Dies ermöglicht eindeutige Entfernung des Paddings
+
   PaddedBytes := PKCS7Pad(PlainBytes, 16);
   StatusMemo.Lines.Add('PKCS#7-Padding angewendet.');
 
-  // 4) Gepaddete Daten anzeigen (Hex)
+  // -------------------------------------------------------------------------
+  // SCHRITT 4: Gepaddete Daten als Hex-Darstellung anzeigen
+  // -------------------------------------------------------------------------
+  // Hex-Format ist lesbar für Menschen und zeigt die exakten Bytes
+  // Beispiel: [48 65 6C 6C 6F] = "Hello" in ASCII/UTF-8
+
   HexText := BytesToHex(PaddedBytes);
   MemoCipher.Lines.Add('Gepaddete Daten (Hex):');
   MemoCipher.Lines.Add(HexText);
-  MemoCipher.Lines.Add('');
+  MemoCipher.Lines.Add('');        // Leerzeile für bessere Lesbarkeit
 
-  // 5) Lehr-Test: Rundenkern auf Block 0
+  // -------------------------------------------------------------------------
+  // SCHRITT 5: Prüfen, ob mindestens ein 16-Byte-Block vorhanden ist
+  // -------------------------------------------------------------------------
+  // Dies sollte durch PKCS7Pad garantiert sein, aber defensive Programmierung
+  // schadet nie. Ohne mindestens 16 Bytes können wir nichts verschlüsseln.
+
   if Length(PaddedBytes) < 16 then
   begin
     StatusMemo.Lines.Add('Fehler: Zu wenige Daten für einen 16-Byte-Block trotz Padding.');
-    Exit;
+    Exit;             // Sollte nie passieren, aber Sicherheit geht vor
   end;
+
+  // =========================================================================
+  // LEHR-TEST: Rundenkern (SubBytes + ShiftRows + MixColumns) auf Block 0
+  // =========================================================================
+  // DIDAKTISCHER ZWECK:
+  // Zeigt den Schülern, was INNERHALB einer AES-Runde passiert (ohne AddRoundKey).
+  // Dies sind die drei Transformationen, die für Diffusion und Konfusion sorgen.
+
+  // -------------------------------------------------------------------------
+  // Schritt A: Ersten 16-Byte-Block extrahieren
+  // -------------------------------------------------------------------------
 
   for I := 0 to 15 do
     Block[I] := PaddedBytes[I];
+   // Nach dieser Schleife: Block enthält die ersten 16 Bytes der gepaddeten Daten
+
+  // -------------------------------------------------------------------------
+  // Schritt B: Block in State-Matrix konvertieren
+  // -------------------------------------------------------------------------
+  // AES arbeitet intern mit einer 4×4-Matrix (Column-Major Order)
+  // Block (linear): [B0, B1, B2, ..., B15]
+  // State (Matrix):
+  //     [B0, B4, B8,  B12]
+  //     [B1, B5, B9,  B13]
+  //     [B2, B6, B10, B14]
+  //     [B3, B7, B11, B15]
 
   BlockToState(Block, State);
+  // -------------------------------------------------------------------------
+  // Schritt C: SubBytes - S-Box Substitution
+  // -------------------------------------------------------------------------
+  // Jedes Byte der State-Matrix wird durch die S-Box ersetzt
+  // Dies ist die EINZIGE nichtlineare Operation in AES
+  // Sorgt für Konfusion (komplexe Beziehung zwischen Input und Output)
+
   SubBytesState(State);
+  // -------------------------------------------------------------------------
+  // Schritt D: ShiftRows - Zeilen verschieben
+  // -------------------------------------------------------------------------
+  // Zeile 0: keine Verschiebung
+  // Zeile 1: 1 Position nach links
+  // Zeile 2: 2 Positionen nach links
+  // Zeile 3: 3 Positionen nach links
+  // Sorgt für horizontale Diffusion (zwischen den Spalten)
+
   ShiftRowsState(State);
+
+   // -------------------------------------------------------------------------
+  // Schritt E: MixColumns - Spalten mischen
+  // -------------------------------------------------------------------------
+  // Jede Spalte wird durch Matrix-Multiplikation in GF(2^8) gemischt
+  // Jedes Byte einer Spalte beeinflusst alle anderen Bytes der Spalte
+  // Sorgt für vertikale Diffusion (innerhalb der Spalten)
+  // In Kombination mit ShiftRows: Vollständige 2D-Diffusion!
+
   MixColumnsState(State);
+
+  // -------------------------------------------------------------------------
+  // Schritt F: State zurück in Block konvertieren
+  // -------------------------------------------------------------------------
   StateToBlock(State, Block);
+
+  // -------------------------------------------------------------------------
+  // Schritt G: Ergebnis als Byte-Array und Hex-String speichern
+  // -------------------------------------------------------------------------
 
   SetLength(RoundBytes, 16);
   Move(Block[0], RoundBytes[0], 16);
   HexRound := BytesToHex(RoundBytes);
 
+  // -------------------------------------------------------------------------
+  // Schritt H: Lehr-Ergebnis anzeigen
+  // -------------------------------------------------------------------------
   MemoCipher.Lines.Add('Erster Block nach SubBytes + ShiftRows + MixColumns (Hex):');
   MemoCipher.Lines.Add(HexRound);
   MemoCipher.Lines.Add('');
 
-  // 6) Passwort -> SHA-256 -> 32-Byte-Key
+   // =========================================================================
+  // ENDE LEHR-TEST
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // SCHRITT 6: Passwort → SHA-256 → 32-Byte-Key
+  // -------------------------------------------------------------------------
+  // Das Benutzer-Passwort (aus Edit2) wird zu einem 32-Byte-AES-Schlüssel:
+  // 1. Passwort als UTF-8-Bytes konvertieren
   KeyBytes := StringToBytesUTF8(Edit2.Text);
+
+   // 2. SHA-256 Hash berechnen
+  // SHA-256 erzeugt immer genau 32 Bytes (256 Bit), perfekt für AES-256
+  //
+  // WICHTIG FÜR LEHRZWECKE:
+  // In der Praxis sollte man PBKDF2, Argon2 oder bcrypt verwenden!
+  // SHA-256 alleine ist zu schnell und anfällig für Brute-Force.
+  // Aber für Lehrzwecke ist es einfach und verständlich.
   KeyBytes := SHA256(KeyBytes);
 
+   // Hex-Darstellung des Schlüssels anzeigen (zu Lehrzwecken)
   MemoCipher.Lines.Add('SHA-256 Hash des Passworts (AES-256 Key):');
   MemoCipher.Lines.Add(BytesToHex(KeyBytes));
   MemoCipher.Lines.Add('');
 
-  // 7) AES-256 Kontext
+  // -------------------------------------------------------------------------
+  // SCHRITT 7: AES-256 Kontext initialisieren (Key Schedule)
+  // -------------------------------------------------------------------------
+  // Der Key Schedule generiert aus dem 32-Byte Hauptschlüssel alle
+  // 15 Rundenschlüssel (RoundKey[0..14]), die für AES-256 benötigt werden.
+  //
+  // Dies ist ein komplexer Prozess mit:
+  // - RotWord (Byte-Rotation)
+  // - SubWord (S-Box)
+  // - Rcon (Rundenkonstanten)
+  //
+  // Siehe Kommentare in AES256InitKey für Details!
   AES256InitKey(KeyBytes, Ctx);
 
-  // 8) ECB verschlüsseln
+  // -------------------------------------------------------------------------
+  // SCHRITT 8: ECB-Verschlüsselung
+  // -------------------------------------------------------------------------
+  // Jetzt kommt die eigentliche Verschlüsselung!
+  //
+  // ECB (Electronic Codebook) Modus:
+  // - Jeder 16-Byte-Block wird UNABHÄNGIG verschlüsselt
+  // - Gleicher Plaintext-Block → Gleicher Ciphertext-Block
+  // - UNSICHER für Produktivsysteme (zeigt Muster)
+  // - Aber einfach zu verstehen für Lehrzwecke
+  //
+  // AES256EncryptECB macht:
+  // - Schleife über alle Blöcke
+  // - Jeden Block mit AES256EncryptBlock verschlüsseln
+  // - Ergebnisse zusammenfügen
   CipherBytes := AES256EncryptECB(PaddedBytes, Ctx);
   StatusMemo.Lines.Add('Daten wurden im AES-256-ECB-Modus verschlüsselt.');
 
-  // 9) Anzeige (Hex)
+   // -------------------------------------------------------------------------
+  // SCHRITT 9: Verschlüsselte Daten als Hex anzeigen
+  // -------------------------------------------------------------------------
   HexCipher := BytesToHex(CipherBytes);
   MemoCipher.Lines.Add('AES-256 ECB verschlüsselte Daten (Hex):');
   MemoCipher.Lines.Add(HexCipher);
 
-  // 10) State übernehmen (für Speichern/Entschlüsseln)
+  // -------------------------------------------------------------------------
+  // SCHRITT 10: WICHTIG - CipherBytes in FCipherBytes übernehmen
+  // -------------------------------------------------------------------------
+  // FCipherBytes ist eine Instanzvariable der Form (private-Sektion)
+  // Sie speichert die verschlüsselten Daten für:
+  // - Entschlüsseln-Button (braucht die Daten)
+  // - Speichern-Button (braucht die Daten)
+  //
+  // WICHTIG: Copy() macht eine echte Kopie, nicht nur eine Referenz!
   FCipherBytes := Copy(CipherBytes);
-  FCipherMode  := acmECB;
+   // Zusätzlich merken wir uns den Modus und IV für späteres Speichern
+  FCipherMode  := acmECB;       // ECB-Modus
   FCipherIV    := ZERO_IV;
 
   StatusMemo.Lines.Add('Cipher-Text wurde in FCipherBytes übernommen (MemoCipher ist nur Anzeige).');
@@ -217,60 +406,136 @@ begin
 end;
 
 procedure TAES_256_Lab.CBCModus_ButtonClick(Sender: TObject);
+{
+  ============================================================================
+  CBCModus_ButtonClick - CBC-Verschlüsselung (Button-Event-Handler)
+  ============================================================================
+
+  ZWECK:
+  Event-Handler für den "Verschlüsseln (CBC)"-Button. Führt eine komplette
+  AES-256-CBC-Verschlüsselung durch - der SICHERE Modus im Gegensatz zu ECB.
+
+  UNTERSCHIED ZU ECB:
+  CBC (Cipher Block Chaining) verkettet die Blöcke:
+  - Jeder Block wird mit dem vorherigen Ciphertext-Block XOR-verknüpft
+  - Erster Block wird mit IV (Initialization Vector) XOR-verknüpft
+  - Gleiche Plaintext-Blöcke → UNTERSCHIEDLICHE Ciphertext-Blöcke
+  - Keine Mustererkennung möglich
+
+  DER IV (INITIALIZATION VECTOR):
+  - MUSS für jede Nachricht NEU und ZUFÄLLIG sein
+  - DARF mit gleichem Key NIEMALS wiederverwendet werden
+  - In diesem Lehrcode: Fester TEST_CBC_IV (NUR zu Demonstrationszwecken!)
+  - In Produktivsystemen: Kryptographisch sicherer Zufalls-IV
+
+  SICHERHEITSHINWEIS FÜR LEHRZWECKE:
+  Der feste IV ist ABSICHTLICH unsicher, um den Code einfach zu halten.
+  In echten Anwendungen MUSS der IV zufällig generiert werden:
+```pascal
+  // Produktiv-Code (NICHT in diesem Lehrprojekt):
+  Randomize;
+  for I := 0 to 15 do
+    IV[I] := Random(256);  // Oder besser: Kryptographisch sicherer RNG
+```
+
+  ============================================================================
+}
 var
-  PlainText: string;
-  PlainBytes: TBytes;
-  PaddedBytes: TBytes;
-  HexText: string;
+  PlainText: string;                     // Klartext aus MemoPlain
+  PlainBytes: TBytes;                     // Klartext als UTF-8-Bytes
+  PaddedBytes: TBytes;                    // Gepaddeter Klartext (Vielfaches von 16 Bytes)
+  HexText: string;                       // Hex-Darstellung der gepaddeten Daten
 
-  KeyBytes: TBytes;
-  Ctx: TAES256Context;
-  CipherBytes: TBytes;
-  HexCipher: string;
+  KeyBytes: TBytes;                        // Passwort → SHA-256 → 32-Byte AES-Key
+  Ctx: TAES256Context;                      // AES-256 Kontext (15 Rundenschlüssel)
+  CipherBytes: TBytes;                    // Verschlüsselte Daten (CBC-Modus)
+  HexCipher: string;                      // Hex-Darstellung des Ciphertexts
 
-  IVBytes: TBytes;                      // nur Anzeige
+  IVBytes: TBytes;                       // Nur für Hex-Anzeige des IV (temporär)
   LocalIV: TByteArray16;
 
-  I: Integer;
+  I: Integer;                            // Laufvariable für Schleifen
 begin
+
+    // -------------------------------------------------------------------------
+  // VORBEREITUNG: Alle dynamischen Arrays auf nil setzen
+  // -------------------------------------------------------------------------
+  // Defensive Programmierung - verhindert Zugriff auf uninitialisierte Daten
   PlainBytes   := nil;
   PaddedBytes  := nil;
   KeyBytes     := nil;
   CipherBytes  := nil;
   IVBytes      := nil;
-    LocalIV[0] := 0;
+  LocalIV[0] := 0;
 
-
+  // -------------------------------------------------------------------------
+  // AUSGABE VORBEREITEN: Memos leeren
+  // -------------------------------------------------------------------------
   StatusMemo.Clear;
   MemoCipher.Clear;
 
+    // Startmeldung - zeigt, dass CBC-Modus verwendet wird
   StatusMemo.Lines.Add('--- CBC-Verschlüsselung gestartet ---');
    StatusMemo.Lines.Add('Hinweis: IV ist bei CBC zwingend und wird im Container gespeichert.');
    StatusMemo.Lines.Add('Hinweis: Passwort->Key erfolgt didaktisch via SHA-256 (nicht produktionssicher).');
 
-  // 1) Klartext lesen
+
+  // -------------------------------------------------------------------------
+  // SCHRITT 1: Klartext aus dem Memo lesen
+  // -------------------------------------------------------------------------
   PlainText := MemoPlain.Text;
-  if PlainText = '' then
+  if PlainText = '' then    // Validierung: Wenn kein Text eingegeben wurde, Abbruch
   begin
     StatusMemo.Lines.Add('Hinweis: Kein Klartext in MemoPlain vorhanden, Vorgang abgebrochen.');
-    Exit;
+    Exit;                 // Frühzeitiger Ausstieg
   end;
 
-  // 2) String -> UTF-8-Bytes
+ // -------------------------------------------------------------------------
+  // SCHRITT 2: String → UTF-8-Bytes
+  // -------------------------------------------------------------------------
+  // Konvertierung zu UTF-8 garantiert:
+  // - Plattformunabhängigkeit
+  // - Korrekte Behandlung von internationalen Zeichen
+  // - Konsistente Byte-Darstellung
+
   PlainBytes := StringToBytesUTF8(PlainText);
   StatusMemo.Lines.Add('Klartext wurde in UTF-8-Bytes umgewandelt.');
 
-  // 3) PKCS#7 Padding
+   // -------------------------------------------------------------------------
+  // SCHRITT 3: PKCS#7 Padding anwenden
+  // -------------------------------------------------------------------------
+  // PKCS#7-Padding ist NOTWENDIG, weil:
+  // - AES nur mit 16-Byte-Blöcken arbeitet
+  // - Nachricht selten exakt ein Vielfaches von 16 Bytes ist
+  // - Padding eindeutig entfernbar sein muss
+  //
+  // Beispiel: "Test" (4 Bytes) → [54 65 73 74 0C 0C 0C 0C 0C 0C 0C 0C 0C 0C 0C 0C]
+  //           12 Padding-Bytes mit Wert 0x0C (= 12 in dezimal)
   PaddedBytes := PKCS7Pad(PlainBytes, 16);
   StatusMemo.Lines.Add('PKCS#7-Padding angewendet.');
 
-  // 4) Gepaddete Daten anzeigen (Hex)
+   // -------------------------------------------------------------------------
+  // SCHRITT 4: Gepaddete Daten als Hex anzeigen
+  // -------------------------------------------------------------------------
+  // Zeigt den Schülern die exakten Bytes, die verschlüsselt werden
   HexText := BytesToHex(PaddedBytes);
   MemoCipher.Lines.Add('Gepaddete Daten (Hex):');
   MemoCipher.Lines.Add(HexText);
-  MemoCipher.Lines.Add('');
+  MemoCipher.Lines.Add('');      // Leerzeile für bessere Lesbarkeit
 
-  // 5) Random IV erzeugen
+   // -------------------------------------------------------------------------
+  // SCHRITT 5: IV anzeigen (zur Kontrolle und zum Lernen)
+  // -------------------------------------------------------------------------
+  // Der IV (Initialization Vector) ist essentiell für CBC:
+  // - 16 Bytes lang
+  // - Wird für den ersten Block benötigt
+  // - In diesem Lehrcode: Fest definiert als TEST_CBC_IV (siehe Konstanten)
+  //
+  // WICHTIG FÜR SCHÜLER:
+  // In echten Anwendungen MUSS der IV:
+  // - Zufällig sein
+  // - Für jede Nachricht NEU sein
+  // - Mit dem Ciphertext gespeichert werden (nicht geheim!)
 
   FillChar(LocalIV, SizeOf(LocalIV), 0);
   if not GenerateRandomIV(LocalIV) then
@@ -279,7 +544,7 @@ begin
     FillChar(LocalIV, SizeOf(LocalIV), 0);
   end;
 
-  // --- IV anzeigen (zur Kontrolle / Lernprojekt) ---
+ // IV von TByteArray16 in TBytes konvertieren (für BytesToHex)
   MemoCipher.Lines.Add('Zufällig erzeugter IV für CBC (Hex):');
 
   SetLength(IVBytes, 16);
@@ -298,29 +563,123 @@ begin
   MemoCipher.Lines.Add(BytesToHex(IVBytes));
   MemoCipher.Lines.Add('');
 
-  // 7) Passwort -> SHA-256 -> AES-Key
+   // -------------------------------------------------------------------------
+  // SCHRITT 6: Passwort → SHA-256 → AES-Key
+  // -------------------------------------------------------------------------
+  // Der Ablauf ist identisch zur ECB-Verschlüsselung:
+  // 1. Passwort aus Edit2 (Eingabefeld) lesen
   KeyBytes := StringToBytesUTF8(Edit2.Text);
+
+  // 2. SHA-256 Hash berechnen
+  // Erzeugt deterministisch 32 Bytes aus beliebigem Passwort
+  // Gleicher Input → Immer gleicher Output
+  //
+  // LEHRHINWEIS:
+  // SHA-256 ist für Passwort-Hashing zu schnell!
+  // Besser: PBKDF2 mit vielen Iterationen, Argon2, bcrypt
+  // Aber für Lehrzwecke ist SHA-256 einfach verständlich
   KeyBytes := SHA256(KeyBytes);
 
-  // 8) AES-256 Kontext
+
+  // -------------------------------------------------------------------------
+  // SCHRITT 7: AES-256 Kontext initialisieren
+  // -------------------------------------------------------------------------
+  // Key Schedule: Generiert alle 15 Rundenschlüssel aus dem Hauptschlüssel
+  //
+  // Was passiert intern (siehe AES256InitKey):
+  // - Erste 8 Wörter (32 Bytes) = Hauptschlüssel
+  // - Wörter 8-59 werden durch Expansion erzeugt
+  // - Verwendet RotWord, SubWord, Rcon für Diffusion
+  // - Ergebnis: 60 Wörter = 15 Rundenschlüssel × 4 Wörter
   AES256InitKey(KeyBytes, Ctx);
 
-  // 9) CBC verschlüsseln (WICHTIG: LocalIV verwenden!)
+ // -------------------------------------------------------------------------
+  // SCHRITT 8: CBC-Verschlüsselung - DER HAUPTUNTERSCHIED ZU ECB!
+  // -------------------------------------------------------------------------
+  // AES256EncryptCBC macht:
+  //
+  // Für Block 0:
+  //   InBlock = PlainBlock[0] ⊕ IV
+  //   CipherBlock[0] = AES_Encrypt(InBlock)
+  //
+  // Für Block 1:
+  //   InBlock = PlainBlock[1] ⊕ CipherBlock[0]  ← Verkettung!
+  //   CipherBlock[1] = AES_Encrypt(InBlock)
+  //
+  // Für Block 2:
+  //   InBlock = PlainBlock[2] ⊕ CipherBlock[1]  ← Verkettung!
+  //   CipherBlock[2] = AES_Encrypt(InBlock)
+  //
+  // usw.
+  //
+  // EFFEKT:
+  // - Jeder Block beeinflusst alle folgenden Blöcke
+  // - Gleiche Plaintext-Blöcke ergeben unterschiedliche Ciphertext-Blöcke
+  // - Muster werden verschleiert
+  // - VIEL sicherer als ECB!
   CipherBytes := AES256EncryptCBC(PaddedBytes, LocalIV, Ctx);
   StatusMemo.Lines.Add('Daten wurden im AES-256-CBC-Modus verschlüsselt.');
 
-  // 10) Anzeige (Hex)
+  // -------------------------------------------------------------------------
+  // SCHRITT 9: Verschlüsselte Daten als Hex ausgeben (Anzeige)
+  // -------------------------------------------------------------------------
   HexCipher := BytesToHex(CipherBytes);
   MemoCipher.Lines.Add('AES-256 CBC verschlüsselte Daten (Hex):');
   MemoCipher.Lines.Add(HexCipher);
 
-  // 11) State übernehmen
+  // -------------------------------------------------------------------------
+  // SCHRITT 10: WICHTIG - CipherBytes in FCipherBytes übernehmen
+  // -------------------------------------------------------------------------
+  // FCipherBytes ist eine Instanzvariable (private-Sektion der Form)
+  // Sie speichert die verschlüsselten Daten im Arbeitsspeicher für:
+  // - Entschlüsseln-Button (braucht die Daten zur Entschlüsselung)
+  // - Speichern-Button (braucht die Daten zum Speichern in Datei)
+  //
+  // Copy() macht eine ECHTE Kopie (nicht nur Referenz):
+  // - CipherBytes kann danach freigegeben werden
+  // - FCipherBytes bleibt erhalten
   FCipherBytes := Copy(CipherBytes);
-  FCipherMode  := acmCBC;
-  FCipherIV    := LocalIV;
+    // Zusätzlich speichern wir Metadaten für späteres Speichern/Entschlüsseln:
+  FCipherMode  := acmCBC;     // Merken, dass CBC-Modus verwendet wurde
+  FCipherIV    := LocalIV;    // Merken, welcher IV verwendet wurde
+   //
+  // WARUM WICHTIG?
+  // - Beim Speichern: Container enthält Modus + IV
+  // - Beim Entschlüsseln: Muss gleicher Modus + IV verwendet werden
+  // - CBC ohne korrekten IV → Entschlüsselung schlägt fehl!
 
   StatusMemo.Lines.Add('Cipher-Text wurde in FCipherBytes übernommen (MemoCipher ist nur Anzeige).');
   StatusMemo.Lines.Add('--- CBC-Verschlüsselung erfolgreich abgeschlossen ---');
+  // =========================================================================
+  // ENDE DER CBC-VERSCHLÜSSELUNG
+  // =========================================================================
+  //
+  // WICHTIGE LEHRPUNKTE FÜR SCHÜLER:
+  //
+  // 1. CBC vs ECB:
+  //    - CBC: Blöcke verkettet, sicher, keine Muster
+  //    - ECB: Blöcke unabhängig, unsicher, zeigt Muster
+  //
+  // 2. Der IV:
+  //    - Muss bei jeder Nachricht NEU sein
+  //    - Muss NICHT geheim sein (kann mit Ciphertext gespeichert werden)
+  //    - DARF mit gleichem Key NIEMALS wiederverwendet werden
+  //
+  // 3. Warum CBC sicherer ist:
+  //    - Gleiche Plaintext-Blöcke → unterschiedliche Ciphertext-Blöcke
+  //    - Ein Block beeinflusst alle folgenden
+  //    - Muster im Plaintext werden verschleiert
+  //
+  // 4. Noch sicherer:
+  //    - Moderne Modi: GCM (mit Authentifizierung)
+  //    - Oder: ChaCha20-Poly1305
+  //    - Diese bieten Authenticated Encryption (Verschlüsselung + MAC)
+  //
+  // WEITERFÜHRENDE INFORMATIONEN:
+  // - NIST SP 800-38A: Empfehlung für Block Cipher Modi
+  // - "Cryptography Engineering" (Ferguson, Schneier, Kohno)
+  // - Padding Oracle Attacks: Vaudenay (2002)
+
 end;
 
 procedure TAES_256_Lab.Entschluesseln_ButtonClick(Sender: TObject);
@@ -769,117 +1128,6 @@ end;
 
 
 
-{const
-  TestKey256: array[0..31] of Byte = (
-    $60,$3D,$EB,$10,$15,$CA,$71,$BE,$2B,$73,$AE,$F0,$85,$7D,$77,$81,
-    $1F,$35,$2C,$07,$3B,$61,$08,$D7,$2D,$98,$10,$A3,$09,$14,$DF,$F4
-  );
-
-  TestPlain: TByteArray16 = (
-    $6B,$C1,$BE,$E2,$2E,$40,$9F,$96,$E9,$3D,$7E,$11,$73,$93,$17,$2A
-  );
-
-  ExpectedCipher: TByteArray16 = (
-    $F3,$EE,$D1,$BD,$B5,$D2,$A0,$3C,$06,$4B,$5A,$7E,$3D,$B1,$81,$F8
-  );
-var
-  KeyBytes: TBytes;
-  Ctx: TAES256Context;
-
-  PlainBlock: TByteArray16;
-  CipherBlock: TByteArray16;
-  DecryptedBlock: TByteArray16;
-
-  ActualCipherBytes: TBytes;
-  ExpectedCipherBytes: TBytes;
-  PlainBytes: TBytes;
-  DecryptedBytes: TBytes;
-
-  I: Integer;
-  OkEncrypt, OkDecrypt: Boolean;
-begin
-  KeyBytes            := nil;
-  ActualCipherBytes   := nil;
-  ExpectedCipherBytes := nil;
-  PlainBytes          := nil;
-  DecryptedBytes      := nil;
-
-  StatusMemo.Clear;
-  MemoCipher.Clear;
-
-  StatusMemo.Lines.Add('--- AES-256 Selftest gestartet ---');
-  StatusMemo.Lines.Add('Verwende festen NIST-Testvektor (Key + Plaintext + erwarteter Cipher).');
-  StatusMemo.Lines.Add('');
-
-  SetLength(KeyBytes, 32);
-  for I := 0 to 31 do
-    KeyBytes[I] := TestKey256[I];
-
-  PlainBlock := TestPlain;
-
-  AES256InitKey(KeyBytes, Ctx);
-
-  AES256EncryptBlock(PlainBlock, CipherBlock, Ctx);
-
-  OkEncrypt := True;
-  for I := 0 to 15 do
-    if CipherBlock[I] <> ExpectedCipher[I] then
-    begin
-      OkEncrypt := False;
-      Break;
-    end;
-
-  AES256DecryptBlock(CipherBlock, DecryptedBlock, Ctx);
-
-  OkDecrypt := True;
-  for I := 0 to 15 do
-    if DecryptedBlock[I] <> TestPlain[I] then
-    begin
-      OkDecrypt := False;
-      Break;
-    end;
-
-  SetLength(ActualCipherBytes,   16);
-  SetLength(ExpectedCipherBytes, 16);
-  SetLength(PlainBytes,          16);
-  SetLength(DecryptedBytes,      16);
-
-  Move(CipherBlock[0],    ActualCipherBytes[0],   16);
-  Move(ExpectedCipher[0], ExpectedCipherBytes[0], 16);
-  Move(TestPlain[0],      PlainBytes[0],          16);
-  Move(DecryptedBlock[0], DecryptedBytes[0],      16);
-
-  MemoCipher.Lines.Add('=== AES-256 Selftest (1 Block) ===');
-  MemoCipher.Lines.Add('Test-Plaintext (Hex):');
-  MemoCipher.Lines.Add(BytesToHex(PlainBytes));
-  MemoCipher.Lines.Add('');
-  MemoCipher.Lines.Add('Erwarteter Cipher (Hex):');
-  MemoCipher.Lines.Add(BytesToHex(ExpectedCipherBytes));
-  MemoCipher.Lines.Add('');
-  MemoCipher.Lines.Add('Berechneter Cipher (Hex):');
-  MemoCipher.Lines.Add(BytesToHex(ActualCipherBytes));
-  MemoCipher.Lines.Add('');
-  MemoCipher.Lines.Add('Entschlüsselter Block (Hex):');
-  MemoCipher.Lines.Add(BytesToHex(DecryptedBytes));
-  MemoCipher.Lines.Add('================================');
-  MemoCipher.Lines.Add('');
-
-  if OkEncrypt then
-    StatusMemo.Lines.Add('Verschlüsselungs-Test: OK (Cipher entspricht dem erwarteten NIST-Vektor).')
-  else
-    StatusMemo.Lines.Add('Verschlüsselungs-Test: FEHLER (Cipher weicht vom erwarteten NIST-Vektor ab).');
-
-  if OkDecrypt then
-    StatusMemo.Lines.Add('Entschlüsselungs-Test: OK (Entschlüsselter Block entspricht dem Plaintext).')
-  else
-    StatusMemo.Lines.Add('Entschlüsselungs-Test: FEHLER (Entschlüsselter Block weicht vom Plaintext ab).');
-
-  if OkEncrypt and OkDecrypt then
-    StatusMemo.Lines.Add('--- AES-256 Selftest ERFOLGREICH abgeschlossen ---')
-  else
-    StatusMemo.Lines.Add('--- AES-256 Selftest FEHLGESCHLAGEN: Implementierung prüfen! ---');
-end;
-}
 procedure TAES_256_Lab.Memo_controlChange(Sender: TObject);
 begin
   // optional: später Tabs/StatusBar synchronisieren
@@ -899,8 +1147,11 @@ begin
   entschluesseln_ECB.Caption    := 'Entschlüsseln (ECB)';
   entschluesseln_CBC.Caption    := 'Entschlüsseln (CBC)';
 
-  Selftest_Button.Caption       := 'Selbsttest';
-
+  Selftest_Button.Caption       := 'Selbsttest'   ;
+  NIST_Test.Caption             := 'NIST_Test'    ;
+  NIST_CBC.Caption              := 'NIST_CBC'     ;
+  speichern.Caption             := 'Chiffre Speichern'   ;
+  laden.Caption                 := 'Chiffre Laden'       ;
   if Assigned(Memo_Control) then
     Memo_Control.ActivePageIndex := 0;
 
