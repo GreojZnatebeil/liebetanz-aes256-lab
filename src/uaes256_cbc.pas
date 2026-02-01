@@ -105,8 +105,7 @@ begin
   for BlockIndex := 0 to NumBlocks - 1 do // Schleife über alle Blöcke
   begin
     // 1. 16 Bytes aus PlainData in InBlock kopieren
-    for I := 0 to 15 do
-      InBlock[I] := PlainData[Offset + I];
+    for I := 0 to 15 do InBlock[I] := PlainData[Offset + I];
 
     // 2. InBlock mit PrevBlock XORen (CBC-Kettenbildung)
     XorBlockInPlace(InBlock, PrevBlock);
@@ -115,8 +114,7 @@ begin
     AES256EncryptBlock(InBlock, OutBlock, Context);
 
     // 4. Verschlüsselten Block in das Ergebnis kopieren
-    for I := 0 to 15 do
-      Result[Offset + I] := OutBlock[I];
+    for I := 0 to 15 do Result[Offset + I] := OutBlock[I];
 
     // 5. Für den nächsten Durchlauf wird der aktuelle Cipherblock zum "PrevBlock"
     PrevBlock := OutBlock;

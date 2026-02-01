@@ -47,29 +47,46 @@ uses
   SysUtils;                            // SysUtils wird für TBytes, Exceptions und Hilfsroutinen benötigt
 
 type
-  // TAESState stellt den internen 4x4-Byte-Block von AES dar (State-Matrix)
-  TAESState = array[0..3, 0..3] of Byte;
+  // ---------------------------------------------------------------------------
+   // AES-State und Blocktypen
+   // ---------------------------------------------------------------------------
+   // AES verarbeitet intern einen 16-Byte-Block als 4×4 Byte-Matrix („State“).
+   // In der Literatur ist die State-Matrix meist als 4 Zeilen × 4 Spalten dargestellt.
+   // Wichtig: Das ist eine *Darstellungsform* – die Daten kommen/gehen meist als
+   // lineare 16 Bytes (TByteArray16).
+   TAESState = array[0..3, 0..3] of Byte;
 
-  // Ein einzelner 16-Byte-Block (praktisch für Input/Output von AES-Blockfunktionen)
-  TByteArray16 = array[0..15] of Byte;
+   // Ein einzelner 16-Byte-Block (128 Bit). Das ist die *feste* AES-Blockgröße,
+   // unabhängig davon, ob AES-128/192/256 verwendet wird.
+   TByteArray16 = array[0..15] of Byte;
 
-  // Ein Roundkey wird ebenfalls als 4x4-Byte-Matrix dargestellt
-  TAESRoundKey = array[0..3, 0..3] of Byte;
+   // RoundKeys: Für jede AES-Runde gibt es einen 16-Byte-Rundenschlüssel,
+   // ebenfalls bequem als 4×4 Byte-Matrix repräsentiert.
+   TAESRoundKey = array[0..3, 0..3] of Byte;
 
-  // AES-256 hat 14 Runden + initialen Roundkey = 15 Roundkeys
-  TAESRoundKeyArray = array[0..14] of TAESRoundKey;
+   // AES-256 hat 14 Runden. Zusätzlich gibt es den initialen AddRoundKey-Schritt.
+   // Daher benötigen wir 15 RoundKeys: Runde 0..14.
+   TAESRoundKeyArray = array[0..14] of TAESRoundKey;
 
-  // Kontext für AES-256: hier speichern wir alle vorberechneten Roundkeys
-  TAES256Context = record
-    RoundKeys: TAESRoundKeyArray;     // Array aller Roundkeys für die einzelnen Runden
-  end;
+   // Kontextobjekt: Hier steckt alles, was nach dem KeySchedule „bereit“ ist,
+   // sodass Block-Encrypt/Decrypt schnell arbeiten können.
+   TAES256Context = record
+     RoundKeys: TAESRoundKeyArray;
+   end;
 
-const
-  AES_BLOCK_SIZE = 16;
-  AES_NB = 4;         // Number of columns (state width)
-  AES_NK_256 = 8;     // Key length in 32-bit words for AES-256
-  AES_NR_256 = 14;    // Number of rounds for AES-256
+ const
+   // AES-Blockgröße in Bytes (immer 16).
+   AES_BLOCK_SIZE = 16;
 
+   // AES_NB: Anzahl Spalten im State (4). Der State ist 4×4 Bytes.
+   AES_NB = 4;
+
+   // AES_NK_256: Key-Länge in 32-Bit-Wörtern für AES-256.
+   // 8 Wörter × 4 Byte = 32 Byte = 256 Bit.
+   AES_NK_256 = 8;
+
+   // AES_NR_256: Anzahl Runden für AES-256.
+   AES_NR_256 = 14;
 
 { High-Level-Hilfsfunktionen (ohne eigentliche AES-Mathematik) }
 
@@ -94,6 +111,7 @@ function PKCS7Unpad(const Data: TBytes; BlockSize: Integer = 16): TBytes;
 { ✅ Lehrzweck: Padding prüfen, ohne Exceptions (Debugger bleibt ruhig) }
 
 function TryGetPKCS7PadLen(const Data: TBytes; out PadLen: Integer; BlockSize: Integer = 16): Boolean;
+
   // Prüft, ob Data gültiges PKCS#7 Padding hat.
   // Wenn ja: Result=True und PadLen enthält die Padding-Länge (1..BlockSize).
   // Wenn nein: Result=False und PadLen=0.
@@ -156,6 +174,70 @@ procedure XorBlockInPlace(var Block: TByteArray16; const Mask: TByteArray16);
 implementation                          // Implementierungsteil der Unit
 
 const
+  {
+===============================================================================
+AES S-Box und Inverse S-Box (FIPS-197)
+===============================================================================
+
+WAS IST DIE AES_SBOX?
+- Die AES S-Box ist eine feste Nachschlagetabelle mit 256 Einträgen (0..255).
+- Sie wird in AES in der SubBytes-Operation verwendet:
+    StateByte := AES_SBOX[StateByte];
+- Zweck: Nichtlinearität („Verwirrung“ / confusion) in den Cipher bringen.
+  Ohne eine nichtlineare Komponente wäre AES algebraisch viel leichter angreifbar.
+
+WARUM IST DIE S-BOX „FEST“ UND NICHT BELIEBIG?
+- AES ist standardisiert. Damit Implementierungen weltweit identisch funktionieren,
+  ist die S-Box exakt vorgeschrieben (FIPS-197).
+- Die Werte sind nicht „zufällig“, sondern konstruiert:
+  1) Multiplikatives Inverses im endlichen Körper GF(2^8) (mit 0 als Sonderfall)
+  2) anschließende affine Transformation
+  → Diese Konstruktion liefert gute kryptographische Eigenschaften
+    (z.B. hohe Nichtlinearität, keine trivialen Strukturen).
+
+WAS IST DIE INVERSE S-BOX?
+- Beim Entschlüsseln muss SubBytes rückgängig gemacht werden (InvSubBytes).
+- Dazu braucht man die Umkehrabbildung:
+    StateByte := AES_INV_SBOX[StateByte];
+- Mathematisch ist die S-Box eine Permutation der 256 Byte-Werte:
+  Jeder Wert 0..255 kommt genau einmal vor.
+  Daher existiert eine eindeutige Inverse.
+
+WARUM WIRD AES_INV_SBOX ZUR LAUFZEIT ERZEUGT?
+- Didaktischer Vorteil: Man muss nicht zwei 256-Tabellen pflegen, die konsistent
+  bleiben müssen. Stattdessen wird die Inverse aus der S-Box abgeleitet.
+- Robustheit: Wenn die S-Box korrekt ist, ist die erzeugte Inverse automatisch
+  korrekt (sofern die Erzeugungsroutine richtig ist).
+- Speicher/Quelle: In Lehrcode ist „eine Quelle der Wahrheit“ (die S-Box) oft
+  besser nachvollziehbar als zwei unabhängige Tabellen.
+
+WIE ERZEUGT MAN DIE INVERSE TYPISCHERWEISE?
+- Für jedes Byte x gilt:
+    y := AES_SBOX[x]
+    AES_INV_SBOX[y] := x
+- Danach muss gelten (Roundtrip-Eigenschaft):
+    AES_INV_SBOX[AES_SBOX[x]] = x  für alle x in 0..255
+  Das ist ein sehr guter Mini-Selbsttest für die Tabellenlogik.
+
+TYPISCHE FEHLERQUELLEN (WICHTIG FÜR SCHÜLER)
+- Verwechslung von Index und Wert:
+    AES_INV_SBOX[x] := AES_SBOX[x]   // falsch!
+  Richtig ist:
+    AES_INV_SBOX[AES_SBOX[x]] := x
+- Nicht initialisierte INV-SBOX (wenn man sie vor dem Aufbau nutzt).
+- S-Box ist keine Permutation (würde auf einen Tippfehler in der Tabelle hindeuten).
+  In dem Fall wäre die Inversbildung nicht eindeutig und Decrypt würde scheitern.
+
+SICHERHEITSKONTEXT (kurz)
+- Die S-Box ist öffentlich und kein Geheimnis.
+- Sicherheit kommt aus dem Schlüssel und der AES-Struktur, nicht aus „versteckten“
+  Tabellen. Transparenz ist hier ein Feature, kein Bug.
+
+REFERENZ
+- FIPS-197 beschreibt die SubBytes/InvSubBytes-Tabellen sowie die zugrunde liegende
+  Konstruktion im GF(2^8).
+===============================================================================
+}
   // AES S-Box (FIPS-197)
   AES_SBOX: array[0..255] of Byte = (
     $63, $7C, $77, $7B, $F2, $6B, $6F, $C5, $30, $01, $67, $2B, $FE, $D7, $AB, $76,
@@ -182,322 +264,275 @@ var
 procedure InitAESInverseTables;
 {
   ============================================================================
-  InitAESInverseTables - Initialisierung der inversen S-Box
+  InitAESInverseTables - Aufbau der inversen AES S-Box (InvSubBytes-Tabelle)
   ============================================================================
 
-  ZWECK:
-  Diese Prozedur wird einmalig beim Start des Programms aufgerufen (siehe
-  'initialization' am Ende der Unit) und berechnet die inverse S-Box
-  (AES_INV_SBOX) aus der vorwärts S-Box (AES_SBOX).
+  ZIEL (WAS PASSIERT HIER?)
+  - Diese Prozedur erzeugt einmalig die Tabelle AES_INV_SBOX[0..255].
+  - Ergebnis: Für jedes Byte y gilt danach:
+        AES_INV_SBOX[y] = x   genau dann, wenn   AES_SBOX[x] = y
+    Anders gesagt: AES_INV_SBOX ist die Umkehrabbildung (Inverse) der AES_SBOX.
 
-  HINTERGRUND - Die AES S-Box:
-  Die S-Box (Substitution Box) ist eine Nachschlagetabelle mit 256 Einträgen,
-  die bei der SubBytes-Transformation verwendet wird. Sie wurde von den
-  AES-Entwicklern Joan Daemen und Vincent Rijmen so konstruiert, dass sie
-  bestimmte kryptographische Eigenschaften erfüllt:
-  - Nichtlinearität (macht lineare Kryptoanalyse schwieriger)
-  - Keine Fixed Points (kein Byte wird auf sich selbst abgebildet, außer $00)
-  - Schutz gegen differentielle Kryptoanalyse
+  WARUM BRAUCHT AES EINE INVERSE S-BOX?
+  - In AES gibt es beim Verschlüsseln die Operation SubBytes:
+        b := AES_SBOX[b]
+  - Beim Entschlüsseln muss diese Substitution rückgängig gemacht werden:
+        b := AES_INV_SBOX[b]
+  - Die Inverse als Lookup-Tabelle ist sehr schnell und vermeidet,
+    dass man die (komplexere) mathematische Umkehrung jedes Mal neu berechnet.
 
-  Die S-Box basiert auf der multiplikativen Inversen im Galois-Feld GF(2^8)
-  mit anschließender affiner Transformation. Details dazu finden sich in
-  FIPS 197, Seite 15-16.
+  WICHTIGES KONZEPT: S-BOX IST EINE PERMUTATION
+  - Die AES S-Box ist eine Permutation der Werte 0..255:
+    * Jeder Wert kommt genau einmal vor.
+    * Es gibt keine Duplikate.
+  - Genau deshalb existiert eine eindeutige Inverse.
+  - Lehrmerksatz:
+    „Nur weil eine Tabelle 256 Werte hat, ist sie nicht automatisch invertierbar –
+     invertierbar ist sie nur, wenn sie eine Permutation ist.“
 
-  WARUM EINE INVERSE S-BOX?
-  Beim Entschlüsseln muss die SubBytes-Operation rückgängig gemacht werden.
-  Statt die inverse Transformation mathematisch zu berechnen (was langsam
-  wäre), wird ebenfalls eine Lookup-Tabelle verwendet.
+  WIE WIRD DIE INVERSE KONSTRUIERT? (DER KERNTRICK)
+  - Wir laufen x von 0..255 durch.
+  - Wir schauen nach, wohin die Vorwärts-S-Box x abbildet:
+        y := AES_SBOX[x]
+  - Dann schreiben wir in die inverse Tabelle an Position y den Ursprung x:
+        AES_INV_SBOX[y] := x
 
-  Die Beziehung ist: AES_INV_SBOX[AES_SBOX[x]] = x für alle x von 0..255
+  DAS IST GENAU DIE GLEICHUNG IM COMMENT:
+      AES_INV_SBOX[ AES_SBOX[x] ] = x
 
-  FUNKTIONSWEISE:
-  Die Funktion durchläuft alle 256 möglichen Byte-Werte (0..255) und trägt
-  für jeden Wert in die inverse S-Box ein, an welcher Position der
-  ursprüngliche Wert in der Vorwärts-S-Box stand.
+  MINI-BEISPIEL (DIDAKTIK)
+  - Angenommen: AES_SBOX[83] = $D1
+    Dann setzt die Schleife:
+      AES_INV_SBOX[$D1] := 83
+    → SubBytes(83) ergibt $D1,
+      InvSubBytes($D1) ergibt wieder 83.
 
-  BEISPIEL:
-  Wenn AES_SBOX[83] = $D1 ist, dann wird AES_INV_SBOX[$D1] = 83 gesetzt.
-  Das bedeutet: SubByte(83) = $D1 und InvSubByte($D1) = 83
+  WARUM „EINMALIG“ UND WO WIRD ES AUFGERUFEN?
+  - AES_INV_SBOX ist ein globales Array.
+  - Es soll vor der ersten Entschlüsselung initialisiert sein.
+  - Typisch (und in Lazarus sehr üblich): Aufruf im initialization-Abschnitt der Unit.
+    Damit ist die Tabelle vorbereitet, bevor irgendein Button-Klick AES nutzt.
 
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197 (AES-Standard): Sektion 5.1.1 (SubBytes) und 5.3.2 (InvSubBytes)
-  - "The Design of Rijndael" (Daemen & Rijmen, 2002), Kapitel 3.4
-  - Die exakten mathematischen Konstruktionsprinzipien der S-Box sind in
-    FIPS 197, Appendix B beschrieben
+  TYPISCHE FEHLERQUELLEN (SEHR GUT FÜR SCHÜLER)
+  1) Index/Wert vertauscht:
+       AES_INV_SBOX[I] := AES_SBOX[I];    // falsch (das kopiert nur, invertiert aber nicht)
+     Richtig ist:
+       AES_INV_SBOX[AES_SBOX[I]] := I;
+
+  2) Reihenfolge/Timing:
+     Wenn InvSubBytes benutzt wird, bevor InitAESInverseTables gelaufen ist,
+     ist AES_INV_SBOX uninitialisiert → Entschlüsselung wird garantiert falsch.
+
+  3) Tippfehler in AES_SBOX:
+     Wenn AES_SBOX keine echte Permutation ist (z.B. doppelter Eintrag),
+     überschreibt die Schleife Einträge in AES_INV_SBOX – das ist ein
+     „stiller“ Fehler, der später wie ein AES-Bug wirkt.
+
+  HISTORISCHER KONTEXT (EINORDNUNG)
+  - AES basiert auf Rijndael von Joan Daemen und Vincent Rijmen (NIST FIPS 197).
+  - Die S-Box ist ein zentraler Baustein für die Nichtlinearität (Confusion).
+  - InvSubBytes ist die exakt inverse Operation für die Entschlüsselung.
+
+  WEITERFÜHRENDE QUELLEN
+  - NIST FIPS 197:
+    * SubBytes: Abschnitt 5.1.1
+    * InvSubBytes: Abschnitt 5.3.2
+  - „The Design of Rijndael“ (Daemen & Rijmen): Hintergrund & Designentscheidungen
 
   ============================================================================
 }
 var
   I: Integer;
 begin
-  // AES_INV_SBOX[ AES_SBOX[x] ] = x
+  // Baue die inverse Abbildung auf:
+  // Für jedes x merken wir uns, welches y = AES_SBOX[x] ist,
+  // und speichern: AES_INV_SBOX[y] = x
   for I := 0 to 255 do
     AES_INV_SBOX[AES_SBOX[I]] := I;
 end;
-
 function SubByte(B: Byte): Byte;
 {
   ============================================================================
-  SubByte - S-Box Substitution (Vorwärts-Transformation)
+  SubByte - AES SubBytes für EIN Byte (S-Box Vorwärtsabbildung)
   ============================================================================
 
-  ZWECK:
-  Führt die S-Box-Substitution für ein einzelnes Byte durch. Dies ist die
-  fundamentale nichtlineare Operation in AES, die jeden 8-Bit-Wert durch
-  einen anderen ersetzt.
+  ZIEL (WAS MACHT DIE FUNKTION?)
+  - Nimmt ein Byte B (0..255) und ersetzt es durch den zugehörigen Wert aus der
+    AES S-Box:
+        Result := AES_SBOX[B];
+  - Das ist genau die SubBytes-Operation aus AES – hier „atomar“ für ein Byte.
 
-  PARAMETER:
-  - B: Das zu substituierende Eingabe-Byte (0..255)
+  WARUM IST DAS WICHTIG? (DIDAKTIK)
+  - AES besteht grob aus „linearen“ Schritten (ShiftRows, MixColumns, AddRoundKey)
+    und genau EINEM zentralen nichtlinearen Schritt: SubBytes.
+  - Ohne Nichtlinearität wäre AES als (fast) lineares System angreifbar.
+  - SubBytes sorgt für **Confusion** (Shannon): Die Beziehung zwischen Schlüssel
+    und Ciphertext wird „verwischt“ und nicht einfach algebraisch ausdrückbar.
 
-  RÜCKGABEWERT:
-  - Das substituierte Byte gemäß der AES S-Box Tabelle
+  WAS IST DIE S-BOX EIGENTLICH?
+  - Die S-Box ist keine „zufällige Tabelle“, sondern bewusst konstruiert:
+    1) Man nimmt die multiplikative Inverse in GF(2^8) (mit 0 als Sonderfall),
+    2) danach eine affine Transformation.
+  - Ergebnis: Eine Permutation über 0..255 mit guten kryptographischen Eigenschaften
+    (u.a. hohe Nichtlinearität, gute Differential-/Linear-Eigenschaften).
 
-  HINTERGRUND - Warum S-Box?
-  Die S-Box ist das Herzstück der Sicherheit von AES. Ohne sie wäre AES
-  eine rein lineare Chiffre, die sehr leicht zu brechen wäre. Die S-Box
-  sorgt für:
+  WARUM ALS LOOKUP-TABELLE?
+  - Performance: Ein Arrayzugriff ist O(1) und extrem schnell.
+  - Didaktik: Man kann direkt sehen, „SubBytes ist eine definierte Abbildung“,
+    ohne GF(2^8)-Mathematik im Code zu verstecken.
+  - Praxis: Viele Implementierungen nutzen ebenfalls Tabellen (oder bit-sliced
+    Varianten), je nach Zielplattform.
 
-  1. NICHTLINEARITÄT: Macht es unmöglich, AES als System linearer
-     Gleichungen darzustellen
-  2. KONFUSION: Ein einzelnes Bit-Flip im Input kann mehrere Bits im
-     Output ändern (nach Claude Shannon, 1949)
-  3. SCHUTZ VOR KRYPTOANALYSE: Speziell designed gegen differentielle
-     und lineare Angriffe
+  TYPISCHE FEHLERQUELLEN (GUT FÜR SCHÜLER)
+  1) Verwechslung Vorwärts/Inverse:
+     - SubByte nutzt AES_SBOX.
+     - InvSubByte nutzt AES_INV_SBOX.
+     Wenn man das vertauscht, ist *jede* Ent-/Verschlüsselung falsch.
 
-  FUNKTIONSWEISE:
-  Die Funktion verwendet die vordefinierte AES_SBOX Lookup-Tabelle.
-  Das Eingabe-Byte wird als Index verwendet: AES_SBOX[B]
+  2) Initialisierung der inversen Tabelle:
+     - SubByte ist sofort nutzbar (AES_SBOX ist const).
+     - InvSubByte braucht ggf. InitAESInverseTables, wenn AES_INV_SBOX zur Laufzeit
+       erzeugt wird (bei dir: ja).
 
-  BEISPIEL:
-  SubByte($53) = $ED
-  SubByte($00) = $63
-  SubByte($FF) = $16
+  3) „Byte ist signed?“
+     - In Pascal ist Byte per Definition 0..255 → perfekt als Index.
+     - In anderen Sprachen (C mit signed char) wäre das ein klassischer Bug.
 
-  PERFORMANCE:
-  Die Lookup-Tabelle ist extrem schnell (O(1) Komplexität). Eine
-  mathematische Berechnung der S-Box-Transformation (multiplikative
-  Inverse in GF(2^8) + affine Transformation) wäre deutlich langsamer.
+  HISTORISCHER KONTEXT (EINORDNUNG)
+  - AES basiert auf Rijndael von Joan Daemen und Vincent Rijmen (NIST FIPS 197).
+  - SubBytes ist der Kern der Nichtlinearität im SPN-Aufbau (Substitution-
+    Permutation Network).
 
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197, Sektion 5.1.1: SubBytes Transformation
-  - FIPS 197, Appendix B: S-Box mathematische Konstruktion
-  - Die S-Box Werte sind in FIPS 197, Figure 7 vollständig aufgelistet
+  WEITERFÜHRENDE QUELLEN
+  - NIST FIPS 197: Abschnitt 5.1.1 (SubBytes) und Appendix B (S-Box-Konstruktion)
+  - „The Design of Rijndael“ (Daemen & Rijmen): Designentscheidungen & Hintergründe
 
   ============================================================================
 }
 begin
+  // Lookup: B dient direkt als Index (0..255)
   Result := AES_SBOX[B];
 end;
 
 function InvSubByte(B: Byte): Byte;
 {
   ============================================================================
-  InvSubByte - Inverse S-Box Substitution (Rückwärts-Transformation)
+  InvSubByte - AES InvSubBytes für EIN Byte (Inverse S-Box)
   ============================================================================
 
-  ZWECK:
-  Führt die inverse S-Box-Substitution durch - die Umkehrung von SubByte.
-  Diese Funktion wird beim Entschlüsseln benötigt, um die SubBytes-
-  Transformation rückgängig zu machen.
+  ZIEL (WAS MACHT DIE FUNKTION?)
+  - Nimmt ein Byte B (0..255) und bildet es über die *inverse* AES S-Box zurück:
+        Result := AES_INV_SBOX[B];
+  - Das ist die Umkehrung von SubByte():
+        InvSubByte(SubByte(x)) = x
+    (für alle x von 0..255).
 
-  PARAMETER:
-  - B: Das zu substituierende Eingabe-Byte (0..255)
+  WARUM BRAUCHT MAN DAS?
+  - Beim Entschlüsseln muss der nichtlineare Schritt SubBytes wieder rückgängig
+    gemacht werden.
+  - AES-Decrypt ist nicht einfach „Encrypt rückwärts abspielen“, sondern hat
+    eigene inverse Operationen:
+      * InvSubBytes  (hier: InvSubByte)
+      * InvShiftRows
+      * InvMixColumns
+      * AddRoundKey  (ist selbst-invers, weil XOR)
 
-  RÜCKGABEWERT:
-  - Das inverse substituierte Byte gemäß der inversen AES S-Box
+  WAS IST DIE INVERSE S-BOX?
+  - AES_SBOX ist eine Permutation aller 256 Byte-Werte.
+    Jede Permutation hat eine eindeutige Inverse.
+  - Die inverse Tabelle erfüllt:
+        AES_INV_SBOX[ AES_SBOX[x] ] = x
+    und damit auch:
+        AES_SBOX[ AES_INV_SBOX[y] ] = y
 
-  MATHEMATISCHE EIGENSCHAFT:
-  Für alle Byte-Werte x gilt:
-  InvSubByte(SubByte(x)) = x
-  SubByte(InvSubByte(x)) = x
+  WARUM AUCH HIER LOOKUP-TABELLE?
+  - Geschwindigkeit: wie bei SubByte ist das ein O(1)-Tabellenzugriff.
+  - Didaktik: Entschlüsselung wird dadurch transparent („wir wenden exakt die
+    inverse Abbildung an“), ohne GF(2^8)-Mathematik im Code.
 
-  Dies macht SubByte und InvSubByte zu mathematisch inversen Funktionen.
+  WICHTIGE VORBEDINGUNG IN DEINEM PROJEKT
+  - Bei dir wird AES_INV_SBOX zur Laufzeit aus AES_SBOX aufgebaut
+    (InitAESInverseTables im initialization-Abschnitt).
+  - Merksatz:
+    „InvSubByte funktioniert nur korrekt, wenn AES_INV_SBOX vorher initialisiert ist.“
 
-  WARUM EINE SEPARATE FUNKTION?
-  Man könnte theoretisch beim Entschlüsseln durch die normale S-Box suchen,
-  wo der gewünschte Wert steht. Das wäre aber sehr langsam (O(256) statt O(1)).
-  Durch die vorgefertigte inverse S-Box bleibt auch das Entschlüsseln schnell.
+  TYPISCHE FEHLERQUELLEN (GUT FÜR SCHÜLER)
+  1) Vergessen, die inverse Tabelle zu initialisieren:
+     - Dann enthält AES_INV_SBOX undefinierte Werte → Decrypt ist Müll.
 
-  FUNKTIONSWEISE:
-  Nutzt die bei Programmstart durch InitAESInverseTables() berechnete
-  inverse S-Box Lookup-Tabelle AES_INV_SBOX.
+  2) Vorwärts/Inverse verwechselt:
+     - SubByte und InvSubByte sehen im Code fast gleich aus.
+     - Ein Vertauschen macht *jede* Entschlüsselung falsch, wirkt aber oft wie
+       „AES ist kaputt“, obwohl nur die Tabelle falsch ist.
 
-  BEISPIEL:
-  InvSubByte($ED) = $53  (da SubByte($53) = $ED war)
-  InvSubByte($63) = $00  (da SubByte($00) = $63 war)
-  InvSubByte($16) = $FF  (da SubByte($FF) = $16 war)
+  HISTORISCHER KONTEXT
+  - AES basiert auf Rijndael (Joan Daemen & Vincent Rijmen, NIST FIPS 197).
+  - SubBytes/InvSubBytes sind der zentrale nichtlineare Teil (SPN-Struktur).
 
-  SYMMETRIE IN AES:
-  Die Existenz dieser inversen Funktion ist charakteristisch für
-  symmetrische Verschlüsselung: Der gleiche Schlüssel kann zum Ver-
-  und Entschlüsseln verwendet werden, weil alle Operationen umkehrbar sind.
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197, Sektion 5.3.2: InvSubBytes Transformation
-  - Die inverse S-Box ist in FIPS 197, Figure 14 aufgelistet
+  WEITERFÜHRENDE QUELLEN
+  - NIST FIPS 197: 5.3.2 (InvSubBytes) und Appendix B (S-Box-Konstruktion)
+  - „The Design of Rijndael“ (Daemen & Rijmen)
 
   ============================================================================
 }
 begin
+  // Inverses Lookup: B dient direkt als Index (0..255)
   Result := AES_INV_SBOX[B];
 end;
 
 procedure SubBytesState(var State: TAESState);
-{
-  ============================================================================
-  SubBytesState - S-Box Substitution auf die gesamte State-Matrix
-  ============================================================================
 
-  ZWECK:
-  Wendet die SubBytes-Transformation auf alle 16 Bytes der State-Matrix an.
-  Dies ist eine der vier Haupttransformationen im AES-Algorithmus und die
-  einzige nichtlineare Operation.
+  {
+    ============================================================================
+    SubBytesState - AES SubBytes auf der gesamten State-Matrix (16 Byte)
+    ============================================================================
 
-  PARAMETER:
-  - State: Die 4×4 State-Matrix (wird direkt modifiziert, call-by-reference)
+    ZIEL (WAS MACHT DIE PROZEDUR?)
+    - Diese Prozedur ersetzt *jedes* der 16 Bytes im AES-State durch seinen
+      S-Box-Wert (Vorwärtsabbildung):
+          State[r,c] := AES_SBOX[ State[r,c] ]
+    - Das ist exakt die AES-Transformation „SubBytes“ aus NIST FIPS 197.
 
-  RÜCKGABEWERT:
-  - Keiner (die State-Matrix wird in-place modifiziert)
+    WARUM IST DAS SO WICHTIG?
+    - SubBytes ist der zentrale nichtlineare Schritt in AES.
+      ShiftRows, MixColumns und AddRoundKey sind (über GF(2)) linear bzw. affine
+      Operationen – ohne SubBytes wäre AES algebraisch deutlich leichter angreifbar.
+    - SubBytes liefert „Confusion“ im Sinne von Claude Shannon: die Beziehung
+      zwischen Schlüssel und Ausgabe wird schwer beschreibbar.
 
-  HINTERGRUND - SubBytes im AES-Kontext:
+    WO IM RUNDENABLAUF PASSIERT DAS?
+    - AES-256 hat 14 Runden.
+      * Runden 1..13:  SubBytes → ShiftRows → MixColumns → AddRoundKey
+      * Runde 14:      SubBytes → ShiftRows → AddRoundKey
+        (in der letzten Runde entfällt MixColumns)
 
-  SubBytes ist die EINZIGE nichtlineare Transformation in AES. Alle anderen
-  Operationen (ShiftRows, MixColumns, AddRoundKey) sind linear. Ohne SubBytes
-  wäre AES anfällig gegen lineare Kryptoanalyse.
+    WIE FUNKTIONIERT DAS HIER KONKRET?
+    - Wir laufen über alle Zeilen und Spalten (4×4 = 16 Positionen).
+    - Jeder Zugriff ist unabhängig: Es gibt keine Verkettung zwischen Bytes.
+      Das ist didaktisch praktisch, weil man SubBytes isoliert testen/verstehen kann.
 
-  ROLLE IN AES:
-  SubBytes wird in JEDER Runde angewendet (außer im Schluss der letzten Runde):
-  - Runden 1-13: SubBytes → ShiftRows → MixColumns → AddRoundKey
-  - Runde 14: SubBytes → ShiftRows → AddRoundKey (ohne MixColumns)
+    WARUM „in-place“ (var State)?
+    - FIPS 197 beschreibt den AES-State als Matrix, die von Schritt zu Schritt
+      transformiert wird.
+    - In-place vermeidet zusätzliche Speicherallokationen und spiegelt das
+      „State wird transformiert“-Denken sauber wider.
 
-  HISTORISCHER KONTEXT:
-  Joan Daemen und Vincent Rijmen haben die S-Box so konstruiert, dass sie:
-  1. Maximale Nichtlinearität aufweist
-  2. Keine schwachen algebraischen Strukturen hat
-  3. Resistent gegen differentielle Kryptoanalyse ist
-  4. Resistent gegen lineare Kryptoanalyse ist
+    TYPISCHE FEHLERQUELLEN (MERKSATZ FÜR SCHÜLER)
+    - SubBytes (Encrypt) nutzt die Vorwärts-S-Box (AES_SBOX).
+    - InvSubBytes (Decrypt) nutzt die inverse S-Box (AES_INV_SBOX).
+    - Wenn man das vertauscht, ist *jede* Ver- und Entschlüsselung falsch.
 
-  Diese Konstruktion basiert auf jahrzehntelanger Forschung in der
-  Kryptographie, insbesondere nach den Erkenntnissen aus der Analyse
-  des DES-Algorithmus.
+    PERFORMANCE / SIDE-CHANNEL-HINWEIS (kurz, aber wichtig)
+    - Lookup-Tabellen sind schnell, aber auf echten CPUs kann die Laufzeit
+      (Cache/Memory) datenabhängig variieren. Für Lehrzwecke ok – für High-Security
+      Implementierungen nutzt man ggf. konstante Methoden / Hardware (AES-NI).
 
-  DIE TRANSFORMATION - Byte für Byte:
+    QUELLEN
+    - NIST FIPS 197: Abschnitt 5.1.1 (SubBytes) und Appendix B (S-Box)
+    - „The Design of Rijndael“ (Daemen & Rijmen)
 
-  SubBytes ersetzt jedes Byte in der State-Matrix durch sein entsprechendes
-  Byte aus der AES S-Box:
-
-  Vorher (Beispiel):
-       [0]  [1]  [2]  [3]
-  [0]  19   A0   9A   E9
-  [1]  3D   F4   C6   F8
-  [2]  E3   E2   8D   48
-  [3]  BE   2B   2A   08
-
-  Nach SubBytes:
-       [0]  [1]  [2]  [3]
-  [0]  D4   E0   B8   1E
-  [1]  27   BF   B4   41
-  [2]  11   98   5D   52
-  [4]  AE   F1   E5   30
-
-  Jedes Byte wurde durch S-Box ersetzt:
-  - 0x19 → 0xD4 (SubByte(0x19) = 0xD4)
-  - 0xA0 → 0xE0 (SubByte(0xA0) = 0xE0)
-  - usw.
-
-  MATHEMATISCHER HINTERGRUND - Die S-Box:
-
-  Die AES S-Box kombiniert zwei Operationen:
-
-  1. MULTIPLIKATIVE INVERSE in GF(2^8):
-     Jedes Byte x wird auf x^(-1) abgebildet (außer 0 → 0)
-
-  2. AFFINE TRANSFORMATION:
-     Das Ergebnis wird durch eine affine Abbildung geschickt, die
-     zusätzliche Nichtlinearität und Komplexität hinzufügt
-
-  Die genaue mathematische Konstruktion findet sich in FIPS 197, Sektion 5.1.1.
-
-  WARUM NICHTLINEARITÄT SO WICHTIG IST:
-
-  Angenommen, SubBytes wäre linear (z.B. einfache XOR-Operation):
-  → Dann wäre der gesamte AES-Algorithmus ein lineares Gleichungssystem
-  → Ein Angreifer könnte mit etwa 256 Klartext/Ciphertext-Paaren das
-    gesamte System lösen und den Schlüssel extrahieren
-  → AES wäre praktisch wertlos
-
-  Die Nichtlinearität durch SubBytes macht dies unmöglich!
-
-  KONFUSION nach Claude Shannon (1949):
-
-  SubBytes realisiert das von Shannon definierte Prinzip der "Konfusion":
-  → Die Beziehung zwischen Ciphertext und Schlüssel soll so komplex wie
-     möglich sein
-  → Jedes Bit des Ciphertexts soll von vielen Bits des Schlüssels abhängen
-  → Statistisches Rauschen: Kleine Änderungen im Input erzeugen große
-     Änderungen im Output
-
-  AVALANCHE-EFFEKT:
-
-  Ein einzelnes geändertes Bit im Input sollte im Durchschnitt die Hälfte
-  der Output-Bits ändern. SubBytes trägt wesentlich dazu bei:
-
-  Beispiel:
-  Input:  0x53 = 01010011
-  Output: 0xED = 11101101
-
-  Input:  0x52 = 01010010 (1 Bit geändert)
-  Output: 0x00 = 00000000 (viele Bits geändert)
-
-  FUNKTIONSWEISE:
-
-  Diese Funktion ist konzeptionell sehr einfach:
-  1. Durchlaufe alle 4 Zeilen der Matrix
-  2. Durchlaufe alle 4 Spalten der Matrix
-  3. Für jede Position [Row, Col]:
-     - Lese das aktuelle Byte
-     - Ersetze es durch SubByte(Byte)
-
-  Dies sind insgesamt 16 unabhängige S-Box-Lookups.
-
-  IN-PLACE MODIFIKATION:
-
-  Die State-Matrix wird direkt modifiziert (var-Parameter in Pascal).
-  Es wird kein neuer Speicher allokiert. Dies ist effizient und entspricht
-  der FIPS 197 Spezifikation, die alle Operationen als Transformationen
-  der State-Matrix definiert.
-
-  PERFORMANCE:
-
-  SubBytes ist sehr schnell:
-  - 16 einfache Array-Lookups
-  - Keine Berechnungen, nur Tabellenzugriffe
-  - In moderner Hardware (AES-NI) wird dies durch spezielle CPU-Instruktionen
-    noch weiter beschleunigt
-
-  SICHERHEITSASPEKT:
-
-  Die S-Box-Lookups sind zeitkonstant (nicht datenabhängig), was wichtig
-  gegen Timing-Angriffe ist. Jeder Lookup dauert gleich lang, unabhängig
-  vom Input-Wert.
-
-  TESTVEKTOREN (FIPS 197, Appendix B):
-
-  Die NIST-Testvektoren zeigen SubBytes an verschiedenen Stellen:
-  - Appendix B: Vollständige Cipher-Beispiele mit Zwischenschritten
-  - Appendix C.1: Einzelne SubBytes-Beispiele
-
-  Diese können zur Verifikation der Implementierung verwendet werden.
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197, Sektion 5.1.1: SubBytes Transformation (offiziell)
-  - FIPS 197, Figure 7: Komplette S-Box Tabelle
-  - "The Design of Rijndael" (Daemen & Rijmen), Kapitel 3.4: S-Box Design
-  - Claude Shannon (1949): "Communication Theory of Secrecy Systems"
-  - Eli Biham, Adi Shamir: "Differential Cryptanalysis of DES"
-
-  ============================================================================
-}
+    ============================================================================
+  }
 var
   Row, Col: Integer;    // Laufvariablen für Zeile und Spalte
 begin
@@ -519,164 +554,50 @@ end;
 procedure InvSubBytesState(var State: TAESState);
 {
   ============================================================================
-  InvSubBytesState - Inverse S-Box Substitution auf die gesamte State-Matrix
+  InvSubBytesState - AES InvSubBytes auf der gesamten State-Matrix (16 Byte)
   ============================================================================
 
-  ZWECK:
-  Wendet die inverse SubBytes-Transformation auf alle 16 Bytes der
-  State-Matrix an. Dies ist die Umkehrung von SubBytesState() und wird
-  beim Entschlüsseln benötigt.
+  ZIEL (WAS MACHT DIE PROZEDUR?)
+  - Diese Prozedur ersetzt *jedes* der 16 Bytes im AES-State durch seinen
+    Wert aus der *inversen* S-Box:
+        State[r,c] := AES_INV_SBOX[ State[r,c] ]
+  - Das ist die Umkehrung der SubBytes-Operation aus AES (NIST FIPS 197, 5.3.2).
 
-  PARAMETER:
-  - State: Die 4×4 State-Matrix (wird direkt modifiziert, call-by-reference)
+  WARUM BRAUCHT MAN DAS?
+  - AES ist eine Blockchiffre, also muss jeder Schritt der Verschlüsselung
+    umkehrbar sein, damit Entschlüsselung möglich ist.
+  - SubBytes ist nichtlinear; deshalb braucht man zur Entschlüsselung eine
+    *separate* inverse Abbildung (InvSubBytes).
 
-  RÜCKGABEWERT:
-  - Keiner (die State-Matrix wird in-place modifiziert)
+  WICHTIGE EIGENSCHAFT (SYMMETRIE / KORREKTHEIT)
+  - Für jedes Byte x gilt:
+        AES_INV_SBOX[ AES_SBOX[x] ] = x
+  - Über die ganze State-Matrix bedeutet das:
+        InvSubBytesState(SubBytesState(State)) = State
 
-  HINTERGRUND - Inverse Transformation:
+  WO IM ENTschlüsselungs-ABLAUF STEHT InvSubBytes?
+  - Die Reihenfolge ist (gegenüber Encrypt) umgekehrt.
+  - Typisches Schema in AES (je nach Rundenzählung):
+      * Start: AddRoundKey (mit letztem RoundKey)
+      * Runden: InvShiftRows → InvSubBytes → AddRoundKey → InvMixColumns
+      * Ende:  InvShiftRows → InvSubBytes → AddRoundKey (mit RoundKey 0)
 
-  Beim Entschlüsseln müssen alle Verschlüsselungs-Schritte rückgängig
-  gemacht werden. Da SubBytes beim Verschlüsseln angewendet wurde, muss
-  InvSubBytes beim Entschlüsseln verwendet werden.
+  VORAUSSETZUNG IM DEINEM PROJEKT
+  - AES_INV_SBOX ist bei dir ein var-Array und wird zur Laufzeit erzeugt
+    (InitAESInverseTables).
+  - Daher muss garantiert sein, dass InitAESInverseTables *vor* der ersten
+    Entschlüsselung ausgeführt wurde (z.B. im initialization-Abschnitt der Unit).
+    Sonst wäre AES_INV_SBOX nicht korrekt initialisiert.
 
-  ROLLE IN AES-ENTSCHLÜSSELUNG:
+  PERFORMANCE / SIDE-CHANNEL-HINWEIS (ehrlich & praxisnah)
+  - Lookup-Tabellen sind schnell und didaktisch super.
+  - Aber: auf echter Hardware kann Tabellenzugriff über Cache/Memories
+    datenabhängig sein. Für Lehrzwecke ok – in High-Security Kontexten
+    nutzt man ggf. konstante Implementierungen oder Hardware (AES-NI).
 
-  InvSubBytes wird in JEDER Entschlüsselungs-Runde angewendet:
-  - Runde 14 (zuerst): AddRoundKey → InvShiftRows → InvSubBytes
-  - Runden 13-1: AddRoundKey → InvMixColumns → InvShiftRows → InvSubBytes
-  - Runde 0: AddRoundKey
-
-  WICHTIG: Die Reihenfolge ist umgekehrt zur Verschlüsselung!
-
-  Verschlüsselung:  SubBytes → ShiftRows → MixColumns → AddRoundKey
-  Entschlüsselung:  AddRoundKey → InvMixColumns → InvShiftRows → InvSubBytes
-
-  DIE INVERSE TRANSFORMATION:
-
-  InvSubBytes verwendet die inverse S-Box (AES_INV_SBOX), die bei
-  Programmstart durch InitAESInverseTables() berechnet wurde.
-
-  Die inverse S-Box hat die Eigenschaft:
-  AES_INV_SBOX[AES_SBOX[x]] = x für alle x
-
-  Beispiel (Rückwärts zu SubBytesState):
-
-  Nach SubBytes:
-       [0]  [1]  [2]  [3]
-  [0]  D4   E0   B8   1E
-  [1]  27   BF   B4   41
-  [2]  11   98   5D   52
-  [3]  AE   F1   E5   30
-
-  Nach InvSubBytes (zurück zum Original):
-       [0]  [1]  [2]  [3]
-  [0]  19   A0   9A   E9
-  [1]  3D   F4   C6   F8
-  [2]  E3   E2   8D   48
-  [3]  BE   2B   2A   08
-
-  Jedes Byte wurde durch inverse S-Box zurückverwandelt:
-  - 0xD4 → 0x19 (InvSubByte(0xD4) = 0x19)
-  - 0xE0 → 0xA0 (InvSubByte(0xE0) = 0xA0)
-  - usw.
-
-  MATHEMATISCHER HINTERGRUND:
-
-  Die inverse S-Box ist mathematisch definiert als:
-  1. Inverse der affinen Transformation
-  2. Multiplikative Inverse in GF(2^8)
-
-  Dies ist die exakte Umkehrung der Schritte in der Vorwärts-S-Box.
-
-  SYMMETRIE-EIGENSCHAFT:
-
-  Für alle State-Matrizen S gilt:
-  InvSubBytesState(SubBytesState(S)) = S
-  SubBytesState(InvSubBytesState(S)) = S
-
-  Diese Eigenschaft ist fundamental für AES:
-  → Verschlüsselung muss umkehrbar sein
-  → Sonst wäre Entschlüsselung unmöglich
-  → Jede Abweichung würde Datenverlust bedeuten
-
-  FUNKTIONSWEISE:
-
-  Die Implementierung ist IDENTISCH zu SubBytesState(), nur mit
-  InvSubByte() statt SubByte():
-
-  1. Durchlaufe alle 4 Zeilen der Matrix
-  2. Durchlaufe alle 4 Spalten der Matrix
-  3. Für jede Position [Row, Col]:
-     - Lese das aktuelle Byte
-     - Ersetze es durch InvSubByte(Byte)
-
-  WARUM ZWEI SEPARATE FUNKTIONEN?
-
-  Man könnte theoretisch eine Funktion mit einem Parameter "Forward/Inverse"
-  schreiben. Separate Funktionen sind aber klarer:
-  - Bessere Lesbarkeit
-  - Entspricht der FIPS 197 Notation
-  - Kein Overhead durch Verzweigungen (if Forward then...)
-  - Compiler kann besser optimieren
-
-  PERFORMANCE:
-
-  InvSubBytes ist genauso schnell wie SubBytes:
-  - 16 Array-Lookups in AES_INV_SBOX
-  - Keine zusätzlichen Berechnungen
-  - Gleiche zeitkonstante Eigenschaften
-
-  SICHERHEITSASPEKT - Timing-Konstanz:
-
-  Wie SubBytes ist auch InvSubBytes zeitkonstant:
-  - Jeder Lookup dauert gleich lang
-  - Unabhängig vom Input-Wert
-  - Schutz gegen Timing-basierte Seitenkanalangriffe
-
-  VERWENDUNG IN AES256DecryptBlock:
-```pascal
-  procedure AES256DecryptBlock(...);
-  begin
-    BlockToState(InBlock, State);
-    AddRoundKey(State, Context.RoundKeys[14]);
-
-    for Round := 13 downto 1 do
-    begin
-      InvShiftRowsState(State);      // Zuerst InvShiftRows
-      InvSubBytesState(State);       // Dann InvSubBytes ← HIER
-      AddRoundKey(State, Context.RoundKeys[Round]);
-      InvMixColumnsState(State);
-    end;
-
-    InvShiftRowsState(State);
-    InvSubBytesState(State);         // Auch in letzter Runde ← HIER
-    AddRoundKey(State, Context.RoundKeys[0]);
-
-    StateToBlock(State, OutBlock);
-  end;
-```
-
-  DEBUGGING-TIPP:
-
-  Beim Debuggen kann man testen, ob InvSubBytes korrekt arbeitet:
-  1. Erzeuge eine zufällige State-Matrix
-  2. Wende SubBytesState() an
-  3. Wende InvSubBytesState() an
-  4. Vergleiche mit Original → muss identisch sein!
-
-  Dies ist ein einfacher Unit-Test für die Korrektheit der Implementierung.
-
-  TESTVEKTOREN:
-
-  FIPS 197 enthält vollständige Beispiele für beide Richtungen:
-  - Appendix B: Komplette Ver- und Entschlüsselung mit Zwischenschritten
-  - Appendix C: Einzelne Transformations-Beispiele
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197, Sektion 5.3.2: InvSubBytes Transformation (offiziell)
-  - FIPS 197, Figure 14: Inverse S-Box Tabelle
-  - "The Design of Rijndael", Kapitel 4: Inverse Cipher
-  - NIST: "Advanced Encryption Standard (AES)" - Implementierungshinweise
+  QUELLEN
+  - NIST FIPS 197: Abschnitt 5.3.2 (InvSubBytes), Figure 14 (Inverse S-Box)
+  - „The Design of Rijndael“ (Daemen & Rijmen): Inverse Cipher / Design
 
   ============================================================================
 }
@@ -705,82 +626,111 @@ end;
 function StringToBytesUTF8(const S: string): TBytes;
 {
   ============================================================================
-  StringToBytesUTF8 - Konvertiert einen String in UTF-8 Bytes
+  StringToBytesUTF8 - String → Byte-Array (UTF-8)
   ============================================================================
 
-  ZWECK:
-  Wandelt einen Lazarus-String in ein Byte-Array um, wobei die UTF-8
-  Kodierung verwendet wird. Diese Funktion ist essentiell, um Texte für
-  die Verschlüsselung vorzubereiten.
+  ZIEL
+  - Wandelt einen Text (Pascal/Lazarus string) in ein dynamisches Byte-Array um,
+    das die UTF-8-kodierte Bytefolge enthält.
+  - Damit wird aus „Zeichen“ eine eindeutige Byte-Repräsentation – genau das,
+    was AES & Co. brauchen.
 
-  PARAMETER:
-  - S: Der zu konvertierende String (kann Umlaute, Sonderzeichen etc. enthalten)
+  WARUM DAS IM KRYPTOPROJEKT WICHTIG IST
+  - Verschlüsselung arbeitet immer auf Bytes, nicht auf „Chars“.
+  - Ohne festgelegte Textkodierung kann der *gleiche* Text auf unterschiedlichen
+    Systemen zu *anderen* Bytes führen → und dann ist das Entschlüsseln/Prüfen
+    nicht reproduzierbar.
+  - UTF-8 ist dafür ideal: international, plattformübergreifend, weit verbreitet.
 
-  RÜCKGABEWERT:
-  - TBytes: Dynamisches Byte-Array mit der UTF-8-kodierten Darstellung
-  - Bei leerem Input-String wird ein leeres Array (nil) zurückgegeben
+  UTF-8 KURZ ERKLÄRT
+  - Variable Länge:
+      ASCII (A..Z)      → 1 Byte
+      Umlaute (ä,ö,ü)   → typischerweise 2 Bytes
+      Viele CJK-Zeichen → 3 Bytes
+      Emoji             → bis 4 Bytes
+  - ASCII-kompatibel: die ersten 128 Zeichen sind identisch zu ASCII.
 
-  HINTERGRUND - Warum UTF-8?
-  UTF-8 ist die Standard-Textkodierung im modernen Computing:
+  WICHTIGER LAZARUS/FPC-HINWEIS (DAS IST DIE STOLPERSTELLE)
+  - In Lazarus/LCL ist ein „string“ in der Praxis sehr oft bereits UTF-8,
+    *aber* technisch hängt das in FPC von String-Typ und Codepage ab
+    (AnsiString mit Codepage, [$H+], Lazarus-Widgets etc.).
+  - UTF8Encode(S) sorgt hier explizit für eine UTF-8-Ausgabe in einem UTF8String.
+    Das ist gut für ein Lehrprojekt, weil damit klar ist:
+      „Ab hier behandeln wir Text als UTF-8-Bytes.“
 
-  1. VARIABLE LÄNGE: ASCII-Zeichen benötigen nur 1 Byte, Umlaute 2 Bytes,
-     Emoji bis zu 4 Bytes. Dies ist platzsparend.
+  FUNKTIONSWEISE (SCHRITT FÜR SCHRITT)
+  1) Result := nil
+     - Leeres Ergebnis als definierter Startzustand.
+  2) Utf8 := UTF8Encode(S)
+     - Konvertiert S in eine UTF-8-kodierte Bytefolge (UTF8String).
+  3) Len := Length(Utf8)
+     - Länge in *Bytes* (bei UTF8String entspricht Length der Byteanzahl).
+  4) Wenn Len > 0:
+     - Array passend allokieren und Bytes 1:1 kopieren.
+     - Move(Utf8[1], Result[0], Len):
+         * Utf8 ist 1-basiert indiziert (String-Index startet bei 1)
+         * TBytes ist 0-basiert indiziert
+         * Move kopiert die Rohbytes ohne Interpretation.
 
-  2. KOMPATIBILITÄT: Die ersten 128 Zeichen sind identisch mit ASCII,
-     was maximale Kompatibilität gewährleistet.
+  BEISPIELE (HEX)
+  - "Hello"  → 48 65 6C 6C 6F
+  - "Hällo"  → 48 C3 A4 6C 6C 6F   (ä = C3 A4)
+  - "日本"    → E6 97 A5 E6 9C AC
 
-  3. SELBSTSYNCHRONISIEREND: Man kann mitten in einem UTF-8-Stream
-     einsteigen und den nächsten Zeichenanfang finden.
+  SYMMETRIE IM PROJEKT
+  - Diese Funktion ist die „Hinrichtung“ (String → UTF-8 Bytes).
+  - Das Gegenstück ist BytesToStringUTF8 (UTF-8 Bytes → String).
+  - Wichtig für Schüler: Nur wenn beide Seiten die *gleiche* Kodierung nutzen,
+    bleibt der Text nach Encrypt/Decrypt identisch.
 
-  4. KEINE BYTE ORDER PROBLEME: Im Gegensatz zu UTF-16 ist UTF-8
-     plattformunabhängig (kein Little/Big-Endian).
-
-  WARUM WICHTIG FÜR VERSCHLÜSSELUNG?
-  AES arbeitet mit Bytes, nicht mit Zeichen. Vor der Verschlüsselung muss
-  jeder Text in eine eindeutige Byte-Repräsentation umgewandelt werden.
-  UTF-8 garantiert, dass:
-  - Der gleiche Text immer die gleichen Bytes erzeugt
-  - Texte plattformübergreifend identisch verschlüsselt werden
-  - Internationale Zeichen korrekt behandelt werden
-
-  FUNKTIONSWEISE:
-  1. Der Lazarus-String wird mit UTF8Encode() in einen UTF8String konvertiert
-  2. Die Länge des UTF-8 Strings wird ermittelt
-  3. Ein entsprechend großes Byte-Array wird allokiert
-  4. Die UTF-8 Bytes werden mit Move() in das Array kopiert
-
-  BEISPIELE:
-  "Hello"      → 5 Bytes:  [48 65 6C 6C 6F]
-  "Hällo"      → 6 Bytes:  [48 C3 A4 6C 6C 6F]  (ä = 2 Bytes in UTF-8)
-  "日本"        → 6 Bytes:  [E6 97 A5 E6 9C AC]  (jedes Zeichen = 3 Bytes)
-  ""           → 0 Bytes:  []
-
-  BESONDERHEIT LAZARUS:
-  In Lazarus (FreePascal) sind normale Strings bereits UTF-8 kodiert,
-  aber UTF8Encode() stellt explizit sicher, dass das Ergebnis wirklich
-  UTF-8 ist, auch wenn der Quellstring in einem anderen Format vorliegt.
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - RFC 3629: UTF-8 Standard Spezifikation
-  - Unicode Standard: www.unicode.org
-  - FreePascal Dokumentation: String-Handling und UTF-8
+  TYPISCHE FEHLERQUELLEN (GUT FÜR UNTERRICHT)
+  - „Ich verschlüssele einen String direkt“ → funktioniert zufällig, aber ist
+    nicht plattformstabil.
+  - Kodierungen mischen (UTF-8 vs. ANSI/Windows-1252) → Umlaute kaputt.
+  - Bytes als Text anzeigen ohne Hex-Darstellung → wirkt „komisch“, ist aber normal.
 
   ============================================================================
 }
 var
-  Utf8: UTF8String;        // UTF-8 kodierter String (garantiert UTF-8 Format)
-  Len: Integer;            // Länge des UTF-8 Strings in Bytes
+  // Utf8 ist ein UTF8String. In FPC/Lazarus ist das praktisch ein String,
+  // dessen Bytes eine UTF-8-kodierte Bytefolge darstellen.
+  // Wichtig: "Length(Utf8)" zählt dann Bytes (nicht Zeichen).
+  Utf8: UTF8String;
+
+  // Len ist die Länge der UTF-8-Bytefolge in Bytes.
+  // Beispiel: "Hällo" hat 5 Zeichen, aber 6 UTF-8-Bytes (ä = 2 Bytes).
+  Len: Integer;
+
 begin
-  // Ergebnis zunächst auf nil setzen (leeres Array)
-  // Dies ist wichtig für den Fall, dass der Input-String leer ist
+  // Standard-Rückgabewert: nil bedeutet hier "leeres Byte-Array".
+  // Das ist ein sauberer definierten Startzustand und vermeidet,
+  // dass bei leerem Input versehentlich alte Daten "stehen bleiben".
   Result := nil;
 
+  // Konvertiere den (Pascal-)String S explizit in eine UTF-8-Bytefolge.
+  // Auch wenn S in Lazarus oft schon UTF-8 ist, macht diese Zeile die
+  // Kodierung *absichtlich eindeutig* für das Krypto-Projekt.
   Utf8 := UTF8Encode(S);
+
+  // Length() bei UTF8String liefert die Anzahl der Bytes in Utf8.
+  // (Nicht die Anzahl der Unicode-Zeichen!)
   Len := Length(Utf8);
 
+  // Nur wenn überhaupt Bytes vorhanden sind, wird Speicher reserviert und kopiert.
+  // Bei Len = 0 bleibt Result = nil (leeres Array).
   if Len > 0 then
   begin
+    // Allokiere genau Len Bytes im Ergebnis-Array.
+    // Ergebnis ist nun ein Bytepuffer, der die UTF-8-Daten aufnehmen kann.
     SetLength(Result, Len);
+
+    // Kopiere die Rohbytes aus Utf8 in das Byte-Array Result.
+    //
+    // Achtung Indexierung:
+    // - Strings sind in Pascal 1-basiert: erstes Zeichen/Byte ist Utf8[1]
+    // - Dynamische Arrays (TBytes) sind 0-basiert: erstes Element ist Result[0]
+    //
+    // Move kopiert Bytes ohne Interpretation (kein Encoding, kein Terminator).
     Move(Utf8[1], Result[0], Len);
   end;
 end;
@@ -792,82 +742,99 @@ function BytesToStringUTF8(const Data: TBytes): string;
   ============================================================================
 
   ZWECK:
-  Wandelt ein Byte-Array mit UTF-8-kodierten Daten zurück in einen
-  lesbaren Lazarus-String um. Diese Funktion wird nach dem Entschlüsseln
-  benötigt, um aus den Bytes wieder Text zu machen.
+  Wandelt ein Byte-Array (TBytes) in einen Lazarus-String um, indem die Bytes
+  als UTF-8 interpretiert werden. Typischer Einsatz: Nach dem Entschlüsseln
+  sollen die Klartext-Bytes wieder als lesbarer Text angezeigt werden.
 
   PARAMETER:
-  - Data: Byte-Array mit UTF-8-kodierten Zeichen
+  - Data: TBytes
+    Bytefolge, die (idealerweise) UTF-8-kodierten Text enthält.
+    Hinweis: Ein "Byte-Array" enthält zunächst nur Rohdaten – ob das wirklich
+    Text ist, entscheidet die Interpretation (hier: UTF-8).
 
   RÜCKGABEWERT:
-  - String: Lazarus-String mit dem dekodierten Text
-  - Bei leerem Input-Array wird ein leerer String zurückgegeben
+  - string
+    Der dekodierte Text. Bei leerem Input wird '' zurückgegeben.
 
-  HINTERGRUND:
-  Diese Funktion ist die exakte Umkehrung von StringToBytesUTF8().
-  Sie muss die UTF-8 Kodierung korrekt interpretieren, damit:
-  - Mehrbyte-Zeichen (Umlaute, Sonderzeichen) richtig erkannt werden
-  - Die Zeichengrenzen korrekt identifiziert werden
-  - Ungültige UTF-8-Sequenzen nicht zu Fehlern führen
+  WICHTIGER HINTERGRUND (UTF-8):
+  - UTF-8 ist eine variable Länge Kodierung:
+    * ASCII-Zeichen: 1 Byte
+    * Umlaute (z.B. "ä"): 2 Bytes
+    * Viele CJK-Zeichen: 3 Bytes
+    * Emoji: bis zu 4 Bytes
+  → Daher gilt: "Len = Anzahl Bytes" ist NICHT "Len = Anzahl Zeichen".
 
-  WICHTIG - FEHLERHAFTE ENTSCHLÜSSELUNG:
-  Wenn ein Text mit dem falschen Passwort entschlüsselt wurde, entstehen
-  zufällige Bytes. Diese Funktion versucht trotzdem, daraus einen String
-  zu machen, was oft zu "Müll-Zeichen" führt. Dies ist normal und zeigt,
-  dass das Passwort falsch war.
+  WARUM DIESE FUNKTION NACH DER ENTSCHLÜSSELUNG?
+  - AES arbeitet auf Bytes, nicht auf Zeichen.
+  - Verschlüsseln/Entschlüsseln liefert Bytefolgen.
+  - Für die Anzeige / Weiterverarbeitung als Text braucht man eine definierte
+    Textkodierung. Hier ist das UTF-8, passend zur Lazarus-Welt.
+
+  FEHLERFALL / DIDAKTIK:
+  - Bei falschem Passwort oder manipulierten Daten entstehen "zufällige" Bytes.
+  - Diese Funktion versucht trotzdem, daraus Text zu machen.
+  - Ergebnis: häufig Ersatzzeichen (�) oder scheinbar "Mülltext".
+    Das ist nicht "ein Bug in UTF-8", sondern ein Signal: Bytes sind vermutlich
+    kein gültiger Klartext.
 
   FUNKTIONSWEISE:
-  1. Prüfen, ob das Byte-Array leer ist
-  2. Ein UTF8String-Objekt in der passenden Größe erzeugen
-  3. Die Bytes vom Array in den UTF8String kopieren
-  4. Den UTF8String implizit als normalen Lazarus-String zurückgeben
+  1) Wenn Data leer ist → sofort '' zurückgeben
+  2) Einen UTF8String mit exakt Len Bytes anlegen
+  3) Die Bytes 1:1 in den String kopieren (Move)
+  4) UTF8String nach string zuweisen (Lazarus verwendet intern UTF-8)
 
-  BEISPIELE (Rückwärts-Konvertierung):
-  [48 65 6C 6C 6F]           → "Hello"
-  [48 C3 A4 6C 6C 6F]        → "Hällo"
-  [E6 97 A5 E6 9C AC]        → "日本"
-  []                          → ""
-  [FF FF FF]                  → "���" (ungültige UTF-8 Sequenz)
+  SYMMETRIE:
+  - Für gültige Texte gilt typischerweise:
+      BytesToStringUTF8(StringToBytesUTF8(S)) = S
+    (vorausgesetzt, der Text bleibt unverändert und ist gültiges UTF-8)
 
-  SYMMETRIE-EIGENSCHAFT:
-  Für alle gültigen UTF-8 Strings gilt:
-  BytesToStringUTF8(StringToBytesUTF8(S)) = S
+  DIDAKTISCHE ERGÄNZUNG: Warum UTF8String als Zwischenschritt?
+  - Man könnte versucht sein, direkt einen "string" zu SetLength'en und Bytes
+    hineinzukopieren. Das ist aber sprach-/compilerabhängig riskant, weil
+    "string" je nach Modus/Compiler/Plattform unterschiedliche Implementierungen
+    haben kann (ShortString/AnsiString/UnicodeString).
+  - UTF8String ist hier bewusst gewählt, weil es semantisch klar macht:
+    „Diese Bytefolge soll als UTF-8 verstanden werden.“
 
-  Diese Eigenschaft ist essentiell für die Verschlüsselung:
-  Klartext → Bytes → Verschlüsselung → Entschlüsselung → Bytes → Klartext
-
-  LAZARUS-BESONDERHEIT:
-  Lazarus arbeitet intern mit UTF-8, daher ist die Zuweisung eines
-  UTF8String an einen normalen String automatisch kompatibel.
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - UTF-8 Dekodierung: RFC 3629
-  - Character Encoding: "The Absolute Minimum Every Software Developer
-    Absolutely, Positively Must Know About Unicode" (Joel Spolsky)
+  TYPISCHE FEHLERQUELLE:
+  - Index-Basen verwechseln:
+    * TBytes: 0-basiert → Data[0] ist das erste Byte
+    * String: 1-basiert → Utf8[1] ist das erste Zeichen/Byte im String-Speicher
+  - Genau deshalb steht im Move(...): Data[0] → Utf8[1]
 
   ============================================================================
 }
 var
-  Utf8: UTF8String;
-  Len: Integer;
+  Utf8: UTF8String;  // Zwischenspeicher: Bytefolge, die als UTF-8 behandelt wird
+  Len: Integer;      // Anzahl der Bytes in Data (nicht: Anzahl der Zeichen!)
 begin
+  // Standard-Rückgabewert: leerer String.
+  // So ist Result immer definiert, auch wenn wir früh Exit machen.
   Result := '';
-  Utf8 := '';
+  Utf8 := '';        // optional, aber didaktisch: "definierter Zustand"
 
+  // Anzahl der Eingabebytes bestimmen
   Len := Length(Data);
-  if Len = 0 then
-    Exit;       // Frühzeitiger Ausstieg spart unnötige Operationen
 
+  // Leere Eingabe → leerer Text (und wir sparen SetLength/Move)
+  if Len = 0 then
+    Exit;
+
+  // UTF8String auf exakt Len Bytes dimensionieren.
+  // Wichtig: Wir reservieren Platz für BYTES, nicht für "Zeichen" (Codepoints).
   SetLength(Utf8, Len);
-  // Bytes vom Array in den UTF8String kopieren
-  // Data[0] ist das erste Byte (Array beginnt bei 0)
-  // Utf8[1] ist das erste Zeichen (String beginnt bei 1)
+
+  // Bytes 1:1 kopieren:
+  // - Data ist ein dynamisches Array und 0-basiert → erstes Byte ist Data[0]
+  // - Strings in Pascal sind 1-basiert → erstes Element ist Utf8[1]
+  // Move interpretiert nichts, es kopiert nur Len Bytes.
   Move(Data[0], Utf8[1], Len);
 
+  // UTF8String in string zurückgeben.
+  // In Lazarus ist string typischerweise UTF-8 kompatibel (AnsiString mit UTF-8 Inhalt).
+  // Achtung: Wenn die Bytes kein gültiges UTF-8 sind, kann die Darstellung später
+  // Ersatzzeichen (�) enthalten (je nach Ausgabe/Widget/Console/GUI).
   Result := Utf8;
-  // Nach diesem Punkt enthält Result den dekodierten Text
-  // Falls die Bytes keine gültige UTF-8-Sequenz waren (z.B. nach falscher
-  // Entschlüsselung), können Ersatzzeichen (�) erscheinen
 end;
 
 function BytesToHex(const Data: TBytes): string;
@@ -877,615 +844,661 @@ function BytesToHex(const Data: TBytes): string;
   ============================================================================
 
   ZWECK:
-  Wandelt ein Byte-Array in einen lesbaren Hexadezimal-String um.
-  Diese Funktion wird hauptsächlich für Debug-Ausgaben und zur Anzeige
-  von verschlüsselten Daten verwendet.
+  Wandelt ein Byte-Array (Rohdaten) in einen lesbaren Hex-String um.
+  Das ist besonders nützlich für Debugging, Log-Ausgaben und das Anzeigen
+  von kryptographischen Werten (Ciphertext, IV, Hash, Schlüsselmaterial).
 
   PARAMETER:
-  - Data: Das zu konvertierende Byte-Array
+  - Data: TBytes
+    Beliebige Bytefolge. Kann leer sein (Length=0) oder auch nil.
 
   RÜCKGABEWERT:
-  - String: Hexadezimale Darstellung (z.B. "4A3F2E1B")
-  - Großbuchstaben A-F werden verwendet
-  - Keine Trennzeichen zwischen den Bytes
+  - string
+    Hexdarstellung ohne Trennzeichen, in Großbuchstaben:
+      [74, 63, 46, 27] → "4A3F2E1B"
+    Leere Eingabe → "".
 
-  HINTERGRUND - Warum Hexadezimal?
-  Hexadezimal (Basis 16) ist die Standarddarstellung für Binärdaten in
-  der Kryptographie, weil:
+  WARUM HEX? (Kurz & praktisch)
+  - 1 Byte = 8 Bit = Wertebereich 0..255.
+  - Hex ist Basis 16: Ein Hex-Zeichen kodiert exakt 4 Bit (= ein "Nibble").
+  - Daher gilt: 1 Byte → 2 Hex-Zeichen ("00" bis "FF").
+  → Sehr kompakt und in Spezifikationen (z.B. FIPS/RFC-Testvektoren) üblich.
 
-  1. KOMPAKT: Jedes Byte wird durch genau 2 Zeichen dargestellt
-     (00 bis FF), während binär 8 Zeichen nötig wären (00000000 bis 11111111)
+  WIE FUNKTIONIERT DIE UMRECHNUNG?
+  Für jedes Byte B:
+  - oberes Nibble  = (B shr 4)  → Bits 7..4
+  - unteres Nibble = (B and $0F)→ Bits 3..0
+  Beide Nibble-Werte liegen im Bereich 0..15 und werden über eine Lookup-Tabelle
+  in '0'..'9','A'..'F' umgewandelt.
 
-  2. LESBAR: Menschen können Hex-Werte leichter erfassen und vergleichen
-     als lange Binär-Strings
+  DIDAKTIK / TYPISCHE FALLSTRICKE:
+  - "shr" verschiebt Bits nach rechts (hier: obere 4 Bits nach unten holen).
+  - "and $0F" maskiert auf 4 Bit, damit der Index garantiert 0..15 bleibt.
+  - High(Data) ist bei leerem/nil Array -1 → die Schleife läuft dann einfach nicht
+    (sauberer, stiller No-Op).
 
-  3. STANDARD: Alle kryptographischen Spezifikationen (FIPS 197, RFCs)
-     verwenden Hex-Notation für Testvektoren und Beispiele
-
-  4. DEBUGGING: Hex-Dumps ermöglichen einfache visuelle Inspektion von
-     verschlüsselten Daten, Schlüsseln und IVs
-
-  VERWENDUNG IN DIESEM PROJEKT:
-  - Anzeige des verschlüsselten Ciphertexts im MemoCipher
-  - Ausgabe von Schlüsseln (SHA-256 Hash)
-  - Darstellung von Testvektoren beim Selftest
-  - Debug-Ausgaben während der Verschlüsselung
-
-  FUNKTIONSWEISE:
-  1. Für jedes Byte im Array werden 2 Hex-Zeichen erzeugt
-  2. Das obere Nibble (4 Bits) ergibt das erste Zeichen
-  3. Das untere Nibble ergibt das zweite Zeichen
-  4. Bit-Operationen (shr, and) extrahieren die Nibbles
-  5. Die HexChars-Tabelle bildet Werte 0-15 auf Zeichen '0'-'9','A'-'F' ab
-
-  BEISPIELE:
-  []                    → ""
-  [0]                   → "00"
-  [255]                 → "FF"
-  [74, 63, 46, 27]      → "4A3F2E1B"
-  [1, 2, 3, 4, 5]       → "0102030405"
-
-  DETAILLIERTE BERECHNUNG (Beispiel Byte = 74 = 0x4A):
-  Byte 74 binär: 01001010
-  Oberes Nibble: 0100 = 4 → Zeichen '4'
-  Unteres Nibble: 1010 = 10 → Zeichen 'A'
-  Ergebnis: "4A"
-
-  PERFORMANCE:
-  Die Verwendung einer Lookup-Tabelle (HexChars) ist deutlich schneller
-  als die Verwendung von IntToHex() oder Format() für jedes Byte.
-  Bei großen Datenmengen macht dies einen spürbaren Unterschied.
-
-  ALTERNATIVE DARSTELLUNGEN:
-  Manche Programme verwenden Trennzeichen wie "4A:3F:2E:1B" oder
-  "4A 3F 2E 1B". Diese Funktion verwendet die kompakte Form ohne
-  Trennzeichen, wie sie in FIPS 197 üblich ist.
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197: Alle Beispiele und Testvektoren sind in Hex notiert
-  - RFC 4648: "Base16" (Hexadezimal) Encoding
+  PERFORMANCE-HINWEIS (wichtig zu wissen):
+  - Dieses Result := Result + ... innerhalb der Schleife ist didaktisch sehr klar,
+    kann aber bei großen Arrays langsamer werden, weil wiederholtes String-
+    Konkatenieren viele Zwischenstrings erzeugen kann (potenziell O(n²)).
+  - Für Lehr-/Debug-Zwecke ist das völlig okay.
+  - Für "viel Daten" würde man typischerweise Result vorher auf Len*2 setzen und
+    direkt in die Zeichenpositionen schreiben (hier ändern wir den Code bewusst nicht).
 
   ============================================================================
 }
 const
-  // Lookup-Tabelle für schnelle Hex-Konvertierung
-  // Index 0-15 wird auf Zeichen '0'-'9' und 'A'-'F' abgebildet
+  // Lookup-Tabelle: Index 0..15 → Hex-Zeichen.
+  // PChar erlaubt direkten Zugriff wie bei einem Array von Zeichen.
   HexChars: PChar = '0123456789ABCDEF';
 var
-  I: Integer;
-  B: Byte;
+  I: Integer;  // Laufvariable über alle Bytes in Data
+  B: Byte;     // aktuelles Byte, das wir in zwei Hex-Zeichen umwandeln
 begin
-  Result := '';
+  Result := ''; // Standard: leerer String (passt für leere/nil Eingaben)
+
+  // Schleife über alle Bytes. Bei leerem/nil Data ist High(Data) = -1,
+  // dann wird die Schleife nicht ausgeführt → Result bleibt ''.
   for I := 0 to High(Data) do
   begin
-    B := Data[I];
-    // Oberes Nibble (4 Bits) extrahieren und in Hex-Zeichen umwandeln
-    // (B shr 4): Schiebt die oberen 4 Bits nach rechts
-    // and $0F: Maskiert auf 4 Bits (0-15), um sicher zu sein
-    // Das Ergebnis (0-15) wird als Index in HexChars verwendet
+    B := Data[I];  // aktuelles Byte holen (0..255)
+
+    // Oberes Nibble (Bits 7..4) extrahieren:
+    // - (B shr 4) schiebt das obere Nibble nach unten.
+    // - and $0F stellt sicher, dass wirklich nur 4 Bits übrig bleiben (0..15).
+    // - Der Wert 0..15 dient als Index in HexChars.
     Result := Result + HexChars[(B shr 4) and $0F];
-    // Unteres Nibble (4 Bits) extrahieren und in Hex-Zeichen umwandeln
-    // and $0F: Maskiert die unteren 4 Bits direkt
+
+    // Unteres Nibble (Bits 3..0) extrahieren:
+    // - B and $0F maskiert direkt die unteren 4 Bits.
+    // - Wieder Lookup in HexChars.
     Result := Result + HexChars[B and $0F];
-    // Nach der Schleife enthält Result die vollständige Hex-Darstellung
-    // Beispiel: [74, 63] → "4A3F"
-  end;
-end;
 
-function HexToBytes(const Hex: string): TBytes;
-     {
-  ============================================================================
-  HexToBytes - Konvertiert hexadezimale Darstellung zurück in Bytes
-  ============================================================================
-
-  ZWECK:
-  Wandelt einen Hexadezimal-String zurück in ein Byte-Array um.
-  Diese Funktion ist die Umkehrung von BytesToHex() und wird verwendet,
-  um Hex-Strings (z.B. aus Test-Vektoren oder Benutzereingaben) in
-  binäre Daten zu konvertieren.
-
-  PARAMETER:
-  - Hex: String mit hexadezimalen Zeichen (z.B. "4A3F2E1B" oder "4A 3F 2E 1B")
-
-  RÜCKGABEWERT:
-  - TBytes: Byte-Array mit den konvertierten Daten
-
-  FEHLERBEHANDLUNG:
-  - Ungültige Hex-Zeichen (nicht 0-9, A-F, a-f) → Exception
-  - Ungerade Anzahl Hex-Zeichen → Exception
-  - Leerzeichen im String werden automatisch entfernt (tolerant)
-
-  HINTERGRUND:
-  Diese Funktion ist essentiell beim Testen der AES-Implementierung,
-  da die NIST-Testvektoren (FIPS 197) in Hex-Notation angegeben sind.
-  Ohne diese Funktion müssten alle Testvektoren manuell in Byte-Arrays
-  übertragen werden, was fehleranfällig wäre.
-
-  FUNKTIONSWEISE:
-  1. Leerzeichen aus dem Input-String entfernen (Toleranz für formatierte Eingaben)
-  2. Prüfen, dass eine gerade Anzahl von Zeichen vorliegt (2 Zeichen = 1 Byte)
-  3. Für jedes Zeichen-Paar:
-     a) Erstes Zeichen → oberes Nibble (4 Bits)
-     b) Zweites Zeichen → unteres Nibble (4 Bits)
-     c) Beide Nibbles kombinieren zu einem Byte
-
-  BEISPIELE:
-  ""              → []
-  "00"            → [0]
-  "FF"            → [255]
-  "4A3F2E1B"      → [74, 63, 46, 27]
-  "4A 3F 2E 1B"   → [74, 63, 46, 27] (Leerzeichen werden entfernt)
-  "0102030405"    → [1, 2, 3, 4, 5]
-
-  DETAILLIERTE BERECHNUNG (Beispiel "4A"):
-  Zeichen '4': HexCharToVal('4') = 4 (oberes Nibble)
-  Zeichen 'A': HexCharToVal('A') = 10 (unteres Nibble)
-  Kombination: (4 shl 4) or 10 = 64 or 10 = 74
-  Ergebnis: Byte-Wert 74 (0x4A)
-
-  GROSS-/KLEINSCHREIBUNG:
-  Die Funktion akzeptiert sowohl Großbuchstaben (A-F) als auch
-  Kleinbuchstaben (a-f), wie es in der Praxis üblich ist.
-
-  VERWENDUNG IN DIESEM PROJEKT:
-  - Laden von Testvektoren im Selftest
-  - Manuelles Eingeben von Schlüsseln oder IVs (falls gewünscht)
-  - Debugging und Verifikation gegen bekannte Werte
-
-  SYMMETRIE-EIGENSCHAFT:
-  Für alle gültigen Byte-Arrays gilt:
-  HexToBytes(BytesToHex(Data)) = Data
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - FIPS 197: Appendix C enthält vollständige Hex-Testvektoren
-  - RFC 4648: Base16 (Hexadecimal) Encoding
-
-  ============================================================================
-}
-
-  function HexCharToVal(C: Char): Integer;
-   {
-    ------------------------------------------------------------------------
-    HexCharToVal - Lokale Hilfsfunktion (nur innerhalb von HexToBytes sichtbar)
-    ------------------------------------------------------------------------
-
-    ZWECK:
-    Konvertiert ein einzelnes Hex-Zeichen ('0'-'9', 'A'-'F', 'a'-'f')
-    in seinen numerischen Wert (0-15).
-
-    PARAMETER:
-    - C: Einzelnes Zeichen
-
-    RÜCKGABEWERT:
-    - Integer: Numerischer Wert (0-15)
-
-    FEHLERBEHANDLUNG:
-    - Wirft eine Exception bei ungültigen Zeichen
-
-    BEISPIELE:
-    '0' → 0, '9' → 9, 'A'/'a' → 10, 'F'/'f' → 15
-    'G' → Exception (ungültiges Hex-Zeichen)
-    ------------------------------------------------------------------------
-  }
-  begin
-    if (C >= '0') and (C <= '9') then
-      Result := Ord(C) - Ord('0')
-    else if (C >= 'A') and (C <= 'F') then
-      Result := 10 + (Ord(C) - Ord('A'))
-    else if (C >= 'a') and (C <= 'f') then
-      Result := 10 + (Ord(C) - Ord('a'))
-    else
-      // Exception werfen mit aussagekräftiger Fehlermeldung
-      // Dies verhindert, dass fehlerhafte Hex-Strings stillschweigend
-      // falsche Bytes erzeugen
-      raise Exception.Create('HexToBytes: Ungültiges Hex-Zeichen: ' + C);
+    // Nach diesen zwei Konkatenationen wurden genau zwei Hex-Zeichen
+    // für dieses Byte angehängt.
   end;
 
-var
-  CleanHex: string;    // Hex-String ohne Leerzeichen
-  I, N: Integer;       // I: Schleifenzähler, N: Anzahl der Bytes im Ergebnis
-  Hi, Lo: Integer;     // Hi: Oberes Nibble, Lo: Unteres Nibble
-begin
-  Result := nil;
-  CleanHex := '';
-
-  for I := 1 to Length(Hex) do
-    if Hex[I] <> ' ' then
-      CleanHex := CleanHex + Hex[I];
-
-  if (Length(CleanHex) mod 2) <> 0 then
-    raise Exception.Create('HexToBytes: Ungerade Anzahl von Hex-Zeichen.');
-
-  N := Length(CleanHex) div 2;
-  SetLength(Result, N);
-
-  for I := 0 to N - 1 do
-  begin
-    Hi := HexCharToVal(CleanHex[2 * I + 1]);
-    Lo := HexCharToVal(CleanHex[2 * I + 2]);
-    // Beide Nibbles zu einem Byte kombinieren
-    // Oberes Nibble wird um 4 Bits nach links verschoben
-    // Unteres Nibble wird mit OR hinzugefügt
-    // Beispiel: Hi=4, Lo=10 → (4 shl 4) or 10 = 64 or 10 = 74
-    Result[I] := Byte((Hi shl 4) or Lo);
-    // Nach der Schleife enthält Result die konvertierten Bytes
-    // Beispiel: "4A3F" → [74, 63]
-  end;
+  // Ergebnislänge ist immer 2 * Length(Data).
+  // Beispiel: 3 Bytes → 6 Hex-Zeichen.
 end;
 
 
-function AES256SelfTest(out Report: string): Boolean;
-{
-  ============================================================================
-  AES256SelfTest - Minimaler Selbsttest (NIST Known Answer Tests)
-  ----------------------------------------------------------------------------
-  Zweck:
-    - Schnelle Plausibilitätsprüfung, ob AES-Kern + Modi korrekt arbeiten
-    - Hilft Contributors beim Verifizieren ohne GUI
-
-  Hinweis:
-    Das ist kein vollständiger Kryptotest-Suite, aber ein guter "Smoke Test".
-  ============================================================================
-}
-  function EqualBytes(const A, B: TBytes): Boolean;
-  var
-    I: Integer;
-  begin
-    if Length(A) <> Length(B) then Exit(False);
-    for I := 0 to High(A) do
-      if A[I] <> B[I] then Exit(False);
-    Result := True;
-  end;
-
-  procedure BytesToBlock16(const Src: TBytes; out Dst: TByteArray16);
-  begin
-    if Length(Src) <> AES_BLOCK_SIZE then
-      raise Exception.Create('AES256SelfTest: Blocklänge ist nicht 16 Byte.');
-
-    Dst[0]:=0;        //<- nimmt dem Compiler den Hint
-
-    Move(Src[0], Dst[0], AES_BLOCK_SIZE);
-  end;
-
-  function Block16ToBytes(const Src: TByteArray16): TBytes;
-  begin
-    Result:=nil;
-    SetLength(Result, AES_BLOCK_SIZE);
-    Move(Src[0], Result[0], AES_BLOCK_SIZE);
-  end;
-
-var
-  Key, Plain, ExpECB, ExpCBC, GotECB, GotCBC, DecCBC: TBytes;
-  Ctx: TAES256Context;
-  InBlk, OutBlk, DecBlk: TByteArray16;
-  IV: TByteArray16;
-begin
-  Report := '';
-  Result := False;
-
-  // NIST SP 800-38A (bekannte Testwerte für AES-256)
-  Key   := HexToBytes('603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4');
-  Plain := HexToBytes('6bc1bee22e409f96e93d7e117393172a');
-
-  // AES-256 ECB (1. Block)
-  ExpECB := HexToBytes('f3eed1bdb5d2a03c064b5a7e3db181f8');
-
-  // AES-256 CBC (1. Block) mit IV = 000102...0F
-  BytesToBlock16(HexToBytes('000102030405060708090a0b0c0d0e0f'), IV);
-  ExpCBC := HexToBytes('f58c4c04d6e5f1ba779eabfb5f7bfbd6');
-
-  // Key Schedule
-  AES256InitKey(Key, Ctx);
-
-  // --- ECB Block Test ---
-  BytesToBlock16(Plain, InBlk);
-  AES256EncryptBlock(InBlk, OutBlk, Ctx);
-  GotECB := Block16ToBytes(OutBlk);
-
-  if EqualBytes(GotECB, ExpECB) then
-    Report := Report + 'ECB: OK' + LineEnding
-  else
-  begin
-    Report := Report + 'ECB: FAIL' + LineEnding +
-              '  expected: ' + BytesToHex(ExpECB) + LineEnding +
-              '  got     : ' + BytesToHex(GotECB) + LineEnding;
-    Exit(False);
-  end;
-
-  AES256DecryptBlock(OutBlk, DecBlk, Ctx);
-  if EqualBytes(Block16ToBytes(DecBlk), Plain) then
-    Report := Report + 'ECB decrypt: OK' + LineEnding
-  else
-  begin
-    Report := Report + 'ECB decrypt: FAIL' + LineEnding;
-    Exit(False);
-  end;
-
-  // --- CBC Test (1 Block) ---
-
-  GotCBC :=  AES256EncryptCBC_TEST(Plain, IV, Ctx);
-  if EqualBytes(GotCBC, ExpCBC) then
-    Report := Report + 'CBC: OK' + LineEnding
-  else
-  begin
-    Report := Report + 'CBC: FAIL' + LineEnding +
-              '  expected: ' + BytesToHex(ExpCBC) + LineEnding +
-              '  got     : ' + BytesToHex(GotCBC) + LineEnding;
-    Exit(False);
-  end;
-
-  DecCBC := AES256DecryptCBC_TEST(GotCBC, IV, Ctx);
-  if EqualBytes(DecCBC, Plain) then
-    Report := Report + 'CBC decrypt: OK' + LineEnding
-  else
-  begin
-    Report := Report + 'CBC decrypt: FAIL' + LineEnding;
-    Exit(False);
-  end;
-
-  Result := True;
-end;
-
-function PKCS7Pad(const Data: TBytes; BlockSize: Integer): TBytes;
-{
-  ============================================================================
-  PKCS7Pad - Fügt PKCS#7-Padding zu den Daten hinzu
-  ============================================================================
-
-  ZWECK:
-  Erweitert die Eingabedaten auf ein Vielfaches der Blockgröße (16 Bytes
-  bei AES) durch Hinzufügen von Padding-Bytes. Dies ist notwendig, weil
-  AES nur mit kompletten 16-Byte-Blöcken arbeiten kann.
-
-  PARAMETER:
-  - Data: Die zu paddenden Eingabedaten (beliebige Länge)
-  - BlockSize: Die Blockgröße in Bytes (Standard: 16 für AES)
-
-  RÜCKGABEWERT:
-  - TBytes: Die gepaddeten Daten (Länge ist immer ein Vielfaches von BlockSize)
-
-  HINTERGRUND - Warum Padding?
-  Nachrichten haben selten eine Länge, die exakt ein Vielfaches von 16 Bytes
-  ist. Beispiele:
-  - "Hallo" = 5 Bytes → braucht 11 Padding-Bytes → 16 Bytes total
-  - "Test" = 4 Bytes → braucht 12 Padding-Bytes → 16 Bytes total
-  - "1234567890123456" = 16 Bytes → braucht 16 Padding-Bytes → 32 Bytes total
-
-  WICHTIG - Padding ist IMMER nötig:
-  Selbst wenn die Nachricht bereits ein Vielfaches von 16 Bytes ist, wird
-  ein kompletter Block (16 Bytes) Padding hinzugefügt. Warum?
-  → Ohne dies könnte der Empfänger nicht unterscheiden, ob das letzte Byte
-     Teil der Nachricht oder Padding ist.
-
-  DER PKCS#7-STANDARD:
-  PKCS#7 (Public Key Cryptography Standards #7) definiert eine eindeutige
-  Padding-Methode:
-
-  - Wenn N Bytes Padding benötigt werden, wird N-mal das Byte N angefügt
-  - N kann Werte von 1 bis BlockSize (16) annehmen
-
-  Beispiele bei BlockSize=16:
-  - Benötigt 1 Byte Padding: füge 0x01 hinzu
-  - Benötigt 5 Bytes Padding: füge 0x05 0x05 0x05 0x05 0x05 hinzu
-  - Benötigt 16 Bytes Padding: füge 16× 0x10 hinzu
-
-  MATHEMATISCHE BERECHNUNG:
-  PadLen = BlockSize - (DataLen mod BlockSize)
-
-  Beispiel: DataLen=13, BlockSize=16
-  → 13 mod 16 = 13
-  → 16 - 13 = 3
-  → Es werden 3 Bytes mit Wert 0x03 hinzugefügt
-
-  VOLLSTÄNDIGE BEISPIELE:
-
-  Input: "Hello" (5 Bytes) = [48 65 6C 6C 6F]
-  → DataLen mod 16 = 5
-  → PadLen = 16 - 5 = 11
-  → Output: [48 65 6C 6C 6F 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B] (16 Bytes)
-
-  Input: "" (0 Bytes) = []
-  → DataLen mod 16 = 0
-  → PadLen = 16 - 0 = 16
-  → Output: [10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10] (16 Bytes)
-
-  Input: "1234567890123456" (16 Bytes, exakt ein Block)
-  → DataLen mod 16 = 0
-  → PadLen = 16
-  → Output: Original 16 Bytes + 16 Bytes Padding = 32 Bytes total
-
-  WARUM DIESER STANDARD?
-  PKCS#7 hat mehrere Vorteile:
-
-  1. EINDEUTIG: Beim Entpadding kann man immer das letzte Byte lesen,
-     um zu erfahren, wie viele Padding-Bytes es gibt
-
-  2. VERIFIZIERBAR: Man kann prüfen, ob das Padding korrekt ist
-     (alle letzten N Bytes müssen den Wert N haben)
-
-  3. KOMPATIBEL: PKCS#7 ist der De-facto-Standard und wird von allen
-     gängigen Krypto-Bibliotheken unterstützt
-
-  SICHERHEITSHINWEIS - Padding Oracle Angriffe:
-  In CBC-Modus kann ungültige Padding-Erkennung zu "Padding Oracle"-
-  Angriffen führen. Deshalb ist wichtig:
-  - Padding-Fehler NICHT unterscheidbar von anderen Fehlern machen
-  - Konstante Zeit für Validierung verwenden
-  → In diesem Lehrprojekt wird dies durch TryGetPKCS7PadLen() erreicht
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - RFC 5652: "Cryptographic Message Syntax (CMS)" - beschreibt PKCS#7
-  - PKCS #7 v1.5: Original-Spezifikation
-  - "Practical Cryptography" (Ferguson & Schneier): Kapitel zu Padding
-  - NIST SP 800-38A: Empfehlungen für Block Cipher Modes
-
-  ============================================================================
-}
-
-var
-  DataLen: Integer;    // Länge der Eingabedaten
-  PadLen: Integer;     // Anzahl der hinzuzufügenden Padding-Bytes
-  I: Integer;          // Laufvariable für die Padding-Schleife
-begin
-  Result := nil;
-
-  DataLen := Length(Data);      // Länge der Eingabedaten ermitteln
-  // Berechnen, wie viele Padding-Bytes benötigt werden
-  // Modulo-Operation: DataLen mod BlockSize gibt den Rest der Division
-  // Beispiel: 13 mod 16 = 13, dann 16 - 13 = 3 Padding-Bytes
-  // Spezialfall: 16 mod 16 = 0, dann 16 - 0 = 16 (kompletter Padding-Block!)
-  PadLen := BlockSize - (DataLen mod BlockSize);
-
-  SetLength(Result, DataLen + PadLen);
-
-  if DataLen > 0 then
-    Move(Data[0], Result[0], DataLen);
-
-  for I := DataLen to DataLen + PadLen - 1 do
-    Result[I] := Byte(PadLen);
-  // Nach diesem Schritt: Result[DataLen..Ende] = PadLen-Bytes
-
-  // Ergebnis hat jetzt garantiert eine Länge, die ein Vielfaches von BlockSize ist
-  // und kann sicher mit AES verschlüsselt werden
-end;
-
-function PKCS7Unpad(const Data: TBytes; BlockSize: Integer): TBytes;
-{
-  ============================================================================
-  PKCS7Unpad - Entfernt PKCS#7-Padding von den Daten
-  ============================================================================
-
-  ZWECK:
-  Entfernt das PKCS#7-Padding, das bei der Verschlüsselung hinzugefügt wurde,
-  um die Original-Nachricht wiederherzustellen. Diese Funktion wird nach
-  dem Entschlüsseln aufgerufen.
-
-  PARAMETER:
-  - Data: Die gepaddeten Daten (z.B. nach AES-Entschlüsselung)
-  - BlockSize: Die Blockgröße in Bytes (Standard: 16 für AES)
-
-  RÜCKGABEWERT:
-  - TBytes: Die Daten ohne Padding (ursprüngliche Nachricht)
-
-  FEHLERBEHANDLUNG:
-  Diese Funktion wirft Exceptions bei ungültigem Padding:
-  - Leere Daten
-  - Länge ist kein Vielfaches von BlockSize
-  - Padding-Byte außerhalb des gültigen Bereichs (1..BlockSize)
-  - Padding-Bytes haben nicht alle den gleichen Wert
-
-  WICHTIG FÜR DEN LEHRBETRIEB:
-  In diesem Projekt wird PKCS7Unpad() NICHT direkt verwendet, sondern
-  die Exception-freie Variante TryGetPKCS7PadLen(). Warum?
-  → Im Lazarus-Debugger würden die Exceptions stören, auch wenn sie
-     korrekt abgefangen werden. Für Lehrzwecke ist dies unerwünscht.
-
-  HINTERGRUND - Das Padding-Problem:
-  Nach der Entschlüsselung haben wir Daten, die Padding enthalten.
-  Problem: Wir wissen nicht, wie lang die ursprüngliche Nachricht war.
-  Lösung: Das letzte Byte gibt uns diese Information!
-
-  FUNKTIONSWEISE:
-  1. Letztes Byte auslesen → dies ist die Padding-Länge N
-  2. Validieren, dass N im gültigen Bereich liegt (1 bis BlockSize)
-  3. Prüfen, dass die letzten N Bytes alle den Wert N haben
-  4. Falls alles korrekt: Original-Länge = Gesamt-Länge - N
-  5. Daten ohne die letzten N Bytes zurückgeben
-
-  BEISPIELE (Rückwärts zu PKCS7Pad):
-
-  Input: [48 65 6C 6C 6F 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B] (16 Bytes)
-  → Letztes Byte = 0x0B = 11
-  → Prüfe: Letzte 11 Bytes sind alle 0x0B ✓
-  → Output: [48 65 6C 6C 6F] = "Hello" (5 Bytes)
-
-  Input: [10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10] (16 Bytes)
-  → Letztes Byte = 0x10 = 16
-  → Prüfe: Alle 16 Bytes sind 0x10 ✓
-  → Output: [] (0 Bytes, war ein leerer String)
-
-  FEHLERHAFTE EINGABEN (werfen Exceptions):
-
-  [48 65 6C 6C 6F 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B 0C]
-  → Letztes Byte = 0x0C = 12
-  → Prüfe: Byte an Position [Länge-12] sollte 0x0C sein, ist aber 0x48
-  → Exception: "Ungültiges Padding (Bytewert stimmt nicht)"
-
-  [48 65 6C 6C 6F] (5 Bytes, keine volle Blockgröße)
-  → Exception: "Ungültige Datenlänge (kein Vielfaches der Blockgröße)"
-
-  WARUM SO STRENGE VALIDIERUNG?
-  Stellen Sie sich vor, was passiert, wenn falsches Passwort verwendet wurde:
-  1. Entschlüsselung erzeugt zufällige Bytes (Müll)
-  2. Letztes Byte ist zufällig, z.B. 0x73
-  3. Ohne Validierung würden wir 115 Bytes entfernen → Fehler!
-  4. Mit Validierung: Exception zeigt, dass etwas nicht stimmt
-
-  Die strenge Validierung schützt also vor:
-  - Falschem Passwort
-  - Korrupten Daten
-  - Falscher Blockgröße
-  - Manipulierten Daten
-
-  SICHERHEITSASPEKT - Timing-Angriffe:
-  Die verschiedenen Exception-Meldungen können theoretisch einen Hinweis
-  geben, wo das Padding ungültig ist (Timing-Unterschiede). In produktiven
-  Systemen sollte man:
-  - Alle Fehler gleich behandeln
-  - Konstante Validierungszeit verwenden
-  → TryGetPKCS7PadLen() ist hier besser
-
-  SYMMETRIE-EIGENSCHAFT:
-  Für alle gültigen Daten gilt:
-  PKCS7Unpad(PKCS7Pad(Data)) = Data
-
-  Dies gewährleistet, dass Ver- und Entschlüsselung korrekt zusammenarbeiten.
-
-  WEITERFÜHRENDE INFORMATIONEN:
-  - RFC 5652: Cryptographic Message Syntax
-  - "Practical Cryptography" (Ferguson & Schneier): Padding Oracle Attacks
-  - NIST SP 800-38A: Block Cipher Modes
-  - Serge Vaudenay (2002): "Security Flaws Induced by CBC Padding"
-
-  ============================================================================
-}
-var
-  DataLen: Integer;         // Länge der gepaddeten Eingabedaten
-  PadLen: Integer;         // Anzahl der Padding-Bytes (aus letztem Byte)
-  I: Integer;                // Laufvariable zur Validierung
-begin
-  Result := nil;
-
-  DataLen := Length(Data);
-
-  if DataLen = 0 then     // Validierung 1: Daten dürfen nicht leer sein
-    raise Exception.Create('PKCS7Unpad: Daten sind leer.');
-
-  if (DataLen mod BlockSize) <> 0 then    // Validierung 2: Daten müssen ein Vielfaches der Blockgröße sein
-    raise Exception.Create('PKCS7Unpad: Ungültige Datenlänge (kein Vielfaches der Blockgröße).');
-
-  // Padding-Länge aus dem letzten Byte auslesen
-  // Dies ist der Kern des PKCS#7-Standards: Das letzte Byte enthält
-  // die Information, wie viele Padding-Bytes es gibt
-  PadLen := Data[DataLen - 1];
-
-  if (PadLen <= 0) or (PadLen > BlockSize) then      // Validierung 3: Padding-Länge muss im gültigen Bereich liegen
-    raise Exception.Create('PKCS7Unpad: Ungültige Padding-Länge.');
-
-  for I := DataLen - PadLen to DataLen - 1 do   // Validierung 4: Alle Padding-Bytes müssen den gleichen Wert haben
-    if Data[I] <> PadLen then
-      raise Exception.Create('PKCS7Unpad: Ungültiges Padding (Bytewert stimmt nicht).');
-    // Falls diese Schleife ohne Exception durchläuft, ist das Padding gültig
-
-  SetLength(Result, DataLen - PadLen);
-
-  if Length(Result) > 0 then
-    Move(Data[0], Result[0], Length(Result));
-  // Ergebnis enthält jetzt die ursprüngliche, ungepaddete Nachricht
-  // Beispiel: [48 65 6C 6C 6F 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B 0B] → [48 65 6C 6C 6F]
-end;
-
-{ ✅ Neue Lehrzweck-Funktionen (ohne Exceptions) }
+
+      function HexToBytes(const Hex: string): TBytes;
+      {
+        ============================================================================
+        HexToBytes - Konvertiert Hex-String zurück in Bytes
+        ============================================================================
+
+        ZWECK:
+        Wandelt eine hexadezimale Textdarstellung (Base16) in ein Byte-Array um.
+        Das ist die Umkehrung von BytesToHex() und wird z.B. für Testvektoren
+        (FIPS 197 / NIST) oder Benutzereingaben gebraucht.
+
+        INPUT-FORMATE (Tolerant, aber definiert):
+        - Erwartet Hex-Zeichenpaare: "4A3F2E1B"
+        - Erlaubt einzelne Leerzeichen im String: "4A 3F 2E 1B"
+          (Nur das Zeichen ' ' wird entfernt, keine Tabs/CR/LF!)
+
+        RÜCKGABEWERT:
+        - TBytes, Länge = AnzahlHexZeichen/2
+        - Bei leerer Eingabe: nil (leeres Array)
+
+        FEHLERBEHANDLUNG (absichtlich streng):
+        - Ungerade Anzahl an Hex-Zeichen nach dem Entfernen der Leerzeichen → Exception
+          (weil ein Byte immer genau 2 Hex-Zeichen braucht)
+        - Ungültiges Zeichen (nicht 0..9, A..F, a..f) → Exception
+          (damit fehlerhafte Eingaben nicht "still" zu falschen Bytes führen)
+
+        DIDAKTIK: WARUM ZWEI NIBBLES?
+        - 1 Hex-Zeichen kodiert 4 Bit (= ein Nibble) → Wertebereich 0..15.
+        - 1 Byte hat 8 Bit → besteht aus 2 Nibbles:
+            Byte = (HiNibble << 4) OR LoNibble
+
+        ============================================================================
+      }
+
+        function HexCharToVal(C: Char): Integer;
+        {
+          --------------------------------------------------------------------------
+          HexCharToVal - Einzelnes Hex-Zeichen → Zahl 0..15
+          --------------------------------------------------------------------------
+
+          ZWECK:
+          Nimmt genau EIN Zeichen und liefert dessen numerischen Wert zurück:
+            '0'..'9' → 0..9
+            'A'..'F' → 10..15
+            'a'..'f' → 10..15
+
+          WARUM Ord(...)-Ord(...)? (klassischer Trick)
+          - Zeichen sind intern Zahlen (ASCII/Unicode Codepoints).
+          - Beispiel: Ord('3') - Ord('0') = 3.
+          - Das ist schnell und eindeutig.
+
+          FEHLERFALL:
+          - Bei allem anderen wird eine Exception geworfen.
+            → lieber laut scheitern als unbemerkt "falsche" Bytes bauen.
+
+          --------------------------------------------------------------------------
+        }
+        begin
+          if (C >= '0') and (C <= '9') then
+            // '0'..'9' direkt in 0..9 umrechnen
+            Result := Ord(C) - Ord('0')
+          else if (C >= 'A') and (C <= 'F') then
+            // 'A' entspricht 10, 'B' 11, ... 'F' 15
+            Result := 10 + (Ord(C) - Ord('A'))
+          else if (C >= 'a') and (C <= 'f') then
+            // Kleinbuchstaben ebenfalls erlauben (üblich bei Hex-Strings)
+            Result := 10 + (Ord(C) - Ord('a'))
+          else
+            // Ungültiges Zeichen → sofort melden.
+            // Hinweis: ' + C ist ok, weil C ein einzelnes Zeichen ist.
+            raise Exception.Create('HexToBytes: Ungültiges Hex-Zeichen: ' + C);
+        end;
+
+      var
+        CleanHex: string;    // Kopie des Input-Strings ohne Leerzeichen (nur ' ')
+        I, N: Integer;       // I: Laufvariable, N: Anzahl Bytes im Ergebnis
+        Hi, Lo: Integer;     // Hi/Lo: oberes/unteres Nibble (0..15)
+      begin
+        Result := nil;       // Standard: leeres Ergebnis
+        CleanHex := '';      // wir bauen uns einen "bereinigten" String
+
+        // 1) Leerzeichen entfernen
+        //    Didaktischer Punkt: Wir wollen tolerant sein gegenüber formatierten Hex-Dumps.
+        //    Achtung: Es wird NUR ' ' entfernt, nicht #9 (Tab) oder Zeilenumbrüche.
+        for I := 1 to Length(Hex) do
+          if Hex[I] <> ' ' then
+            CleanHex := CleanHex + Hex[I];
+
+        // 2) Länge prüfen: gerade Anzahl Zeichen?
+        //    Zwei Hex-Zeichen = genau ein Byte. Ungerade → Input ist unvollständig/kaputt.
+        if (Length(CleanHex) mod 2) <> 0 then
+          raise Exception.Create('HexToBytes: Ungerade Anzahl von Hex-Zeichen.');
+
+        // 3) Ergebnisgröße bestimmen und allokieren
+        N := Length(CleanHex) div 2;   // Anzahl Bytes
+        SetLength(Result, N);
+
+        // 4) Je zwei Zeichen zu einem Byte zusammensetzen
+        //    Indexierung beachten:
+        //    - Strings in Pascal sind 1-basiert: CleanHex[1] ist das erste Zeichen.
+        //    - TBytes ist 0-basiert: Result[0] ist das erste Byte.
+        for I := 0 to N - 1 do
+        begin
+          // Zeichenpaar holen: Positionen (2*I+1) und (2*I+2)
+          Hi := HexCharToVal(CleanHex[2 * I + 1]); // oberes Nibble 0..15
+          Lo := HexCharToVal(CleanHex[2 * I + 2]); // unteres Nibble 0..15
+
+          // Byte zusammensetzen:
+          // - Hi kommt in Bits 7..4: daher shl 4
+          // - Lo bleibt in Bits 3..0
+          // - OR verbindet beide Nibbles ohne Überträge
+          Result[I] := Byte((Hi shl 4) or Lo);
+
+          // Beispiel "4A":
+          // Hi=4, Lo=10 → (4 shl 4)=64 → 64 OR 10 = 74 = $4A
+        end;
+
+        // Nach der Funktion:
+        // - Result enthält die binären Bytes.
+        // - Bei Eingabe "" bleibt Result nil (N=0, SetLength(Result,0) → leer).
+      end;
+
+      function AES256SelfTest(out Report: string): Boolean;
+      {
+        ============================================================================
+        AES256SelfTest - Minimaler Selbsttest (NIST Known Answer Tests)
+        ============================================================================
+        ZWECK
+        - Diese Funktion ist ein „Smoke Test“ für deine AES-256-Implementierung:
+          Sie prüft mit *bekannten* offiziellen Testwerten, ob
+            (1) der AES-Blockkern (EncryptBlock/DecryptBlock) korrekt ist und
+            (2) die Betriebsmodi (hier: ECB und CBC) korrekt arbeiten.
+        - Der Test ist bewusst klein gehalten: schnell, reproduzierbar,
+          ohne GUI-Abhängigkeit – ideal für Contributors und Regression-Checks.
+
+        WAS GENAU WIRD GETESTET?
+        - Es werden Vektoren aus NIST SP 800-38A verwendet („Known Answer Tests“ / KAT):
+          * AES-256 mit festem Schlüssel
+          * fester Plaintext-Block (16 Bytes)
+          * erwarteter Ciphertext für ECB (1. Block)
+          * erwarteter Ciphertext für CBC (1. Block) mit festem IV
+        - Zusätzlich wird für ECB und CBC wieder zurück entschlüsselt, um zu prüfen:
+          „Decrypt(Encrypt(Plain)) == Plain“.
+
+        WARUM SIND NIST-TESTVEKTOREN SO WERTVOLL?
+        - Weil du damit nicht „gegen dich selbst“ testest.
+        - Ein Selftest mit eigenen Erwartungswerten kann Fehler übersehen
+          („zwei Fehler heben sich auf“). NIST-Vektoren liefern externe Wahrheit.
+
+        WICHTIGE DIDAKTISCHE EINORDNUNG (AES vs. Modus)
+        - AES (FIPS 197) definiert die Blockchiffre für 16-Byte-Blöcke.
+        - ECB/CBC sind Betriebsmodi („Modes of Operation“) und sind separat beschrieben
+          (z.B. NIST SP 800-38A).
+        - Darum testest du hier beides:
+          * Blockfunktion (Kern)
+          * Modus-Logik (Verkettung, IV-Nutzung)
+
+        WAS DIESER TEST NICHT IST
+        - Keine vollständige Kryptotest-Suite (keine vielen Blöcke, keine Randomized Tests,
+          keine Side-Channel-Checks, keine Fault-Injection, keine Performance-Messung).
+        - Aber: Als schneller „geht überhaupt alles?“–Test ist das genau richtig.
+
+        RÜCKGABEVERHALTEN
+        - Result = True  → alle Checks bestanden
+        - Result = False → beim ersten Fehler wird abgebrochen (early exit),
+                          Report enthält die Diagnose.
+
+        OUTPUT (Report)
+        - Report ist eine textuelle Zusammenfassung („ECB: OK“, „CBC: OK“ …),
+          inkl. expected/got Hex-Dumps bei Fehlern.
+        ============================================================================
+      }
+
+        function EqualBytes(const A, B: TBytes): Boolean;
+        {
+          --------------------------------------------------------------------------
+          EqualBytes - Bytegenauer Vergleich zweier TBytes-Arrays
+          --------------------------------------------------------------------------
+          ZWECK
+          - Vergleicht zwei Bytefolgen auf Identität:
+            gleiche Länge UND jedes Byte identisch.
+          - Wird im Selftest verwendet, um „got“ gegen „expected“ zu prüfen.
+
+          DIDAKTISCHE ANMERKUNG (Timing)
+          - Diese Implementierung bricht beim ersten Unterschied ab (early exit).
+            Das ist für Tests völlig okay.
+          - Für sicherheitskritische Vergleiche (z.B. MAC/Tag/Passwort) würde man
+            *konstantzeitige* Vergleiche nutzen, um Timing-Leaks zu vermeiden.
+            Hier ist das nicht notwendig, weil es nur ein Test/Debug-Helfer ist.
+          --------------------------------------------------------------------------
+        }
+        var
+          I: Integer;
+        begin
+          if Length(A) <> Length(B) then Exit(False);
+          for I := 0 to High(A) do
+            if A[I] <> B[I] then Exit(False);
+          Result := True;
+        end;
+
+        procedure BytesToBlock16(const Src: TBytes; out Dst: TByteArray16);
+        {
+          --------------------------------------------------------------------------
+          BytesToBlock16 - Konvertiert TBytes (16 Byte) → fester 16-Byte-Block
+          --------------------------------------------------------------------------
+          ZWECK
+          - Viele AES-Kernfunktionen arbeiten mit einem festen 16-Byte-Typ
+            (TByteArray16), weil AES immer blockweise mit 16 Bytes arbeitet.
+          - Diese Routine stellt sicher, dass die Quelle genau 16 Bytes hat und
+            kopiert dann die Bytes in den Block.
+
+          WARUM DIE LÄNGENPRÜFUNG?
+          - AES_BLOCK_SIZE = 16 ist ein harter Vertrag.
+          - Wenn hier versehentlich 15 oder 17 Bytes ankommen, ist das ein Programm-
+            oder Testvektor-Fehler → besser sofort stoppen.
+          - Deshalb wird hier eine Exception geworfen (das ist „programmer error“,
+            nicht „korrupte Datei“).
+
+          TECHNISCHER HINWEIS
+          - Dst ist ein „out“-Parameter. In FPC kann das bedeuten, dass Dst vor der
+            Prozedur ggf. initialisiert wird. Der „Hint“-Trick (Dst[0]:=0) ist nur
+            dafür da, den Compiler zufriedenzustellen, nicht für die Logik.
+          --------------------------------------------------------------------------
+        }
+        begin
+          if Length(Src) <> AES_BLOCK_SIZE then
+            raise Exception.Create('AES256SelfTest: Blocklänge ist nicht 16 Byte.');
+
+          Dst[0]:=0;        //<- nimmt dem Compiler den Hint
+
+          // 16 Bytes 1:1 kopieren
+          Move(Src[0], Dst[0], AES_BLOCK_SIZE);
+        end;
+
+        function Block16ToBytes(const Src: TByteArray16): TBytes;
+        {
+          --------------------------------------------------------------------------
+          Block16ToBytes - Konvertiert fester 16-Byte-Block → TBytes
+          --------------------------------------------------------------------------
+          ZWECK
+          - Umgekehrte Richtung zu BytesToBlock16.
+          - Praktisch, weil viele Hilfsfunktionen (BytesToHex, EqualBytes, etc.)
+            mit TBytes arbeiten.
+
+          IMPLEMENTATIONSDETAIL
+          - Ergebnis wird auf 16 Bytes allokiert und dann per Move gefüllt.
+          --------------------------------------------------------------------------
+        }
+        begin
+          Result:=nil;
+          SetLength(Result, AES_BLOCK_SIZE);
+          Move(Src[0], Result[0], AES_BLOCK_SIZE);
+        end;
+
+      var
+        Key, Plain, ExpECB, ExpCBC, GotECB, GotCBC, DecCBC: TBytes;
+        Ctx: TAES256Context;
+        InBlk, OutBlk, DecBlk: TByteArray16;
+        IV: TByteArray16;
+      begin
+        // -------------------------------------------------------------------------
+        // Initialisierung der Ausgaben
+        // -------------------------------------------------------------------------
+        Report := '';
+        Result := False;  // pessimistisch: wird nur bei komplettem Erfolg True
+
+        // -------------------------------------------------------------------------
+        // 1) Testvektoren laden (NIST SP 800-38A, AES-256)
+        // -------------------------------------------------------------------------
+        // Schlüssel (32 Bytes = 256 Bit) und Plaintext (16 Bytes = 1 AES-Block)
+        Key   := HexToBytes('603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4');
+        Plain := HexToBytes('6bc1bee22e409f96e93d7e117393172a');
+
+        // Erwarteter Ciphertext für AES-256 ECB (1 Block)
+        ExpECB := HexToBytes('f3eed1bdb5d2a03c064b5a7e3db181f8');
+
+        // Erwarteter Ciphertext für AES-256 CBC (1 Block) mit IV = 00 01 02 ... 0F
+        // Hinweis: In CBC ist der IV Teil der Modusdefinition; ohne korrekten IV
+        // kann CBC nicht korrekt entschlüsseln.
+        BytesToBlock16(HexToBytes('000102030405060708090a0b0c0d0e0f'), IV);
+        ExpCBC := HexToBytes('f58c4c04d6e5f1ba779eabfb5f7bfbd6');
+
+        // -------------------------------------------------------------------------
+        // 2) Key-Schedule erzeugen (Roundkeys vorberechnen)
+        // -------------------------------------------------------------------------
+        // AES256InitKey expandiert den 256-Bit-Key in Roundkeys für 14 Runden.
+        AES256InitKey(Key, Ctx);
+
+        // -------------------------------------------------------------------------
+        // 3) ECB Block Test (AES-Kern + ECB ohne IV)
+        // -------------------------------------------------------------------------
+        // Plain (TBytes) → InBlk (TByteArray16)
+        BytesToBlock16(Plain, InBlk);
+
+        // Einen Block verschlüsseln
+        AES256EncryptBlock(InBlk, OutBlk, Ctx);
+
+        // OutBlk → TBytes (für Vergleich/Hex-Ausgabe)
+        GotECB := Block16ToBytes(OutBlk);
+
+        // Vergleich mit erwartetem NIST-Ergebnis
+        if EqualBytes(GotECB, ExpECB) then
+          Report := Report + 'ECB: OK' + LineEnding
+        else
+        begin
+          Report := Report + 'ECB: FAIL' + LineEnding +
+                    '  expected: ' + BytesToHex(ExpECB) + LineEnding +
+                    '  got     : ' + BytesToHex(GotECB) + LineEnding;
+          Exit(False); // Early Exit: Bei so einem Fehler ist alles Weitere wenig sinnvoll
+        end;
+
+        // ECB-Decryption-Roundtrip: Encrypt → Decrypt muss wieder Plain ergeben
+        AES256DecryptBlock(OutBlk, DecBlk, Ctx);
+        if EqualBytes(Block16ToBytes(DecBlk), Plain) then
+          Report := Report + 'ECB decrypt: OK' + LineEnding
+        else
+        begin
+          Report := Report + 'ECB decrypt: FAIL' + LineEnding;
+          Exit(False);
+        end;
+
+        // -------------------------------------------------------------------------
+        // 4) CBC Test (1 Block) - testet Moduslogik (IV + Verkettung) + AES-Kern
+        // -------------------------------------------------------------------------
+        // Hinweis: AES256EncryptCBC_TEST arbeitet hier auf TBytes. Da wir genau
+        // einen Block testen, ist das Ergebnis ebenfalls 16 Bytes.
+        GotCBC :=  AES256EncryptCBC_TEST(Plain, IV, Ctx);
+
+        if EqualBytes(GotCBC, ExpCBC) then
+          Report := Report + 'CBC: OK' + LineEnding
+        else
+        begin
+          Report := Report + 'CBC: FAIL' + LineEnding +
+                    '  expected: ' + BytesToHex(ExpCBC) + LineEnding +
+                    '  got     : ' + BytesToHex(GotCBC) + LineEnding;
+          Exit(False);
+        end;
+
+        // CBC-Decryption-Roundtrip: Decrypt(Cipher, IV) muss wieder Plain ergeben
+        DecCBC := AES256DecryptCBC_TEST(GotCBC, IV, Ctx);
+        if EqualBytes(DecCBC, Plain) then
+          Report := Report + 'CBC decrypt: OK' + LineEnding
+        else
+        begin
+          Report := Report + 'CBC decrypt: FAIL' + LineEnding;
+          Exit(False);
+        end;
+
+        // -------------------------------------------------------------------------
+        // Wenn wir bis hier kommen: alle Tests bestanden
+        // -------------------------------------------------------------------------
+        Result := True;
+      end;
+
+      function PKCS7Pad(const Data: TBytes; BlockSize: Integer): TBytes;
+      {
+        ============================================================================
+        PKCS7Pad - PKCS#7 Padding für Blockchiffren (z.B. AES)
+        ============================================================================
+        ZWECK
+        - AES (und andere Blockchiffren) verarbeiten Daten blockweise (bei AES: 16 Byte).
+          Wenn der Klartext nicht exakt auf Blockgrenze endet, muss er „aufgefüllt“
+          werden, damit die Verschlüsselung in ganzen Blöcken arbeiten kann.
+        - PKCS#7 ist dafür der verbreitetste, kompatible Standard.
+
+        WICHTIG: PKCS#7 IST „SELBSTBESCHREIBEND“
+        - Beim PKCS#7 Padding besteht jedes Padding-Byte aus dem Wert der Padding-Länge.
+          Beispiel: PadLen = 5  →  05 05 05 05 05
+        - Dadurch kann der Empfänger beim Entpadding einfach das letzte Byte lesen:
+            letztes Byte = N  →  entferne N Bytes
+          (und prüfe, dass die letzten N Bytes wirklich alle N sind).
+
+        PARAMETER
+        - Data:
+            Beliebige Bytefolge (Klartext), die auf eine Blockgrenze gebracht werden soll.
+        - BlockSize:
+            Blockgröße in Bytes (bei AES normalerweise 16).
+            Hinweis: In robusten Implementierungen sollte BlockSize > 0 sein.
+            (Dieser Code prüft das NICHT explizit – der Aufrufer muss sinnvoll arbeiten.)
+
+        RÜCKGABEWERT
+        - Result:
+            Neue Bytefolge, bestehend aus:
+              [Originaldaten][Padding-Bytes]
+            Die Gesamtlänge ist *immer* ein Vielfaches von BlockSize.
+
+        WARUM AUCH BEI EXAKTER BLOCKLÄNGE NOCH PADDING?
+        - Wenn Data bereits auf Blockgrenze endet (DataLen mod BlockSize = 0),
+          dann wäre ohne Padding unklar, ob das letzte Byte „echt“ ist oder Padding.
+        - PKCS#7 löst das eindeutig, indem es in diesem Fall einen *vollen* Block
+          Padding anhängt:
+            PadLen = BlockSize  →  BlockSize-mal das Byte BlockSize
+          Beispiel bei AES (16):
+            ... + 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10
+
+        FORMEL
+        - DataLen := Length(Data)
+        - PadLen  := BlockSize - (DataLen mod BlockSize)
+          Dabei gilt:
+            PadLen ist im Bereich 1..BlockSize (bei sinnvoller BlockSize>0).
+          *Genau* das macht PKCS#7 eindeutig.
+
+        MINI-BEISPIELE (BlockSize=16)
+        - DataLen = 5   → PadLen = 11 → 0B×11
+        - DataLen = 16  → PadLen = 16 → 10×16 (voller Padding-Block)
+        - DataLen = 0   → PadLen = 16 → 10×16 (auch leere Nachricht wird zu 1 Block)
+
+        SICHERHEITS-KONTEXT (WARUM PADDING „riskant“ sein kann)
+        - In CBC kann eine zu detaillierte Padding-Fehlermeldung ein „Padding Oracle“
+          ermöglichen (Angreifer lernt über Fehlertypen etwas über Klartext).
+        - Daher ist es gut, dass du im Projekt zusätzlich „TryGetPKCS7PadLen()“ hast:
+          Validierung ohne Exceptions/Unterscheidbarkeit ist didaktisch sinnvoll.
+
+        QUELLEN / WEITERFÜHREND
+        - PKCS#7 ist historisch Teil der CMS/PKCS#7-Welt (heute: RFC 5652 / CMS).
+        - Für Betriebsmodi: NIST SP 800-38A.
+        ============================================================================
+      }
+      var
+        DataLen: Integer;    // Länge der Eingabedaten (Bytes)
+        PadLen: Integer;     // Anzahl Padding-Bytes (1..BlockSize)
+        I: Integer;          // Laufvariable
+      begin
+        // Standard: leeres Ergebnis (wird gleich korrekt dimensioniert)
+        Result := nil;
+
+        // 1) Länge der Eingabedaten bestimmen (in Bytes, nicht „Zeichen“)
+        DataLen := Length(Data);
+
+        // 2) Padding-Länge berechnen:
+        //    - (DataLen mod BlockSize) ist der „Rest“ bis zur nächsten Blockgrenze
+        //    - PadLen ist genau die Anzahl Bytes, die fehlen
+        //    - Spezialfall: Rest=0 → PadLen=BlockSize (voller Padding-Block)
+        PadLen := BlockSize - (DataLen mod BlockSize);
+
+        // 3) Ergebnis auf „Original + Padding“ dimensionieren
+        SetLength(Result, DataLen + PadLen);
+
+        // 4) Originaldaten (falls vorhanden) in das Ergebnis kopieren
+        //    Move ist ein reiner Byte-Kopierer, ohne Interpretation.
+        if DataLen > 0 then
+          Move(Data[0], Result[0], DataLen);
+
+        // 5) Padding ans Ende schreiben:
+        //    Alle PadLen Bytes bekommen den Wert PadLen.
+        //    Beispiel: PadLen=3 → ... 03 03 03
+        for I := DataLen to DataLen + PadLen - 1 do
+          Result[I] := Byte(PadLen);
+
+        // Nachher gilt:
+        // - Length(Result) mod BlockSize = 0
+        // - Das Padding ist anhand des letzten Bytes eindeutig entfernbar (PKCS#7)
+      end;
+
+      function PKCS7Unpad(const Data: TBytes; BlockSize: Integer): TBytes;
+      {
+        ============================================================================
+        PKCS7Unpad - Entfernt PKCS#7-Padding (Rückweg zu PKCS7Pad)
+        ============================================================================
+        ZWECK
+        - Nach der Entschlüsselung (z.B. AES/CBC oder AES/ECB) liegt der Klartext
+          wieder als Bytefolge vor – aber *inklusive* PKCS#7-Padding.
+        - PKCS7Unpad entfernt dieses Padding und stellt die ursprüngliche Nachricht
+          wieder her.
+
+        WICHTIG (DIDAKTIK): "UNPAD" IST VALIDIERUNG
+        - PKCS#7 ist nicht nur "abschneiden", sondern auch eine Plausibilitätsprüfung:
+          Das letzte Byte sagt, wie viele Bytes Padding vorhanden sind (PadLen),
+          und *alle* letzten PadLen Bytes müssen exakt diesen Wert haben.
+        - Dadurch erkennt man viele Fehlerfälle:
+          * falsches Passwort (liefert Zufallsbytes)
+          * manipulierte/kaputte Daten
+          * falsche Blockgröße
+          * falscher Modus / falscher Key / falscher IV
+
+        PARAMETER
+        - Data:
+            Gepaddete Daten (typischerweise Ausgabe der Entschlüsselung).
+            Erwartung: Length(Data) ist ein Vielfaches von BlockSize.
+        - BlockSize:
+            Blockgröße in Bytes (bei AES üblicherweise 16).
+
+          HINWEIS (Praxissicherheit):
+          - BlockSize muss > 0 sein, sonst wäre "mod BlockSize" eine Division durch 0.
+          - Für PKCS#7 ist außerdem sinnvoll: BlockSize <= 255
+            (weil PadLen als *Bytewert* in den Padding-Bytes steht).
+          In diesem Lehrcode wird BlockSize nicht explizit geprüft – der Aufrufer
+          sollte korrekt arbeiten (AES => 16).
+
+        RÜCKGABEWERT
+        - Result:
+            Die Daten ohne Padding, also die ursprüngliche Nachricht.
+
+        FEHLERBEHANDLUNG (EXCEPTIONS)
+        - Diese Funktion wirft Exceptions bei ungültigem Padding.
+        - Das ist als "harte" Variante okay, kann aber im Unterricht (Debugger) nerven.
+          Deshalb hast du zusätzlich TryGetPKCS7PadLen() / IsValidPKCS7Padding().
+
+        SICHERHEITSHINWEIS (Padding-Oracle / Fehlermeldungen)
+        - Unterschiedliche Exception-Texte und frühzeitige Abbrüche können theoretisch
+          Informationslecks begünstigen (klassisches CBC Padding Oracle Thema).
+        - In produktiven Systemen behandelt man Fehler möglichst einheitlich und
+          validiert in möglichst konstanter Zeit.
+        - Für Lehrzwecke ist die klare Exception-Nachricht aber hilfreich.
+
+        ALGORITHMUS (PKCS#7 UNPAD)
+        1) Mindestannahmen prüfen:
+           - Data darf nicht leer sein.
+           - DataLen muss ein Vielfaches der Blockgröße sein.
+        2) PadLen aus dem letzten Byte lesen:
+           - PadLen := Data[DataLen-1]
+        3) PadLen muss im gültigen Bereich liegen:
+           - 1..BlockSize
+        4) Die letzten PadLen Bytes müssen alle den Wert PadLen haben:
+           - wenn nicht → ungültiges Padding
+        5) Ergebnislänge = DataLen - PadLen
+           - kopiere die ersten (DataLen-PadLen) Bytes als Result
+
+        SYMMETRIE
+        - Für gültige Daten gilt:
+            PKCS7Unpad(PKCS7Pad(Data, BlockSize), BlockSize) = Data
+        ============================================================================
+      }
+      var
+        DataLen: Integer;         // Gesamtlänge der gepaddeten Eingabedaten in Bytes
+        PadLen: Integer;          // Padding-Länge N (aus dem letzten Byte), erwartet: 1..BlockSize
+        I: Integer;               // Laufvariable für die Padding-Validierung
+      begin
+        // Standard: leeres Result (wird erst bei Erfolg dimensioniert)
+        Result := nil;
+
+        // 1) Gesamtlänge bestimmen
+        DataLen := Length(Data);
+
+        // Validierung 1: Leere Eingabe ist niemals korrekt gepaddet
+        if DataLen = 0 then
+          raise Exception.Create('PKCS7Unpad: Daten sind leer.');
+
+        // Validierung 2: Nach einer Blockchiffre-Entschlüsselung erwarten wir immer
+        // eine Block-multiple Länge. Alles andere deutet auf falsche Daten hin.
+        // (Achtung: BlockSize muss > 0 sein, sonst Division durch 0!)
+        if (DataLen mod BlockSize) <> 0 then
+          raise Exception.Create('PKCS7Unpad: Ungültige Datenlänge (kein Vielfaches der Blockgröße).');
+
+        // 2) Padding-Länge aus dem letzten Byte:
+        // PKCS#7-Regel: Das letzte Byte *ist* die Anzahl der Padding-Bytes.
+        // Beispiel: ... 03 03 03  -> PadLen = 3
+        PadLen := Data[DataLen - 1];
+
+        // Validierung 3: PadLen muss im Bereich 1..BlockSize liegen.
+        // PadLen=0 ist verboten, PadLen>BlockSize ist Unsinn (würde "zu viel" entfernen).
+        if (PadLen <= 0) or (PadLen > BlockSize) then
+          raise Exception.Create('PKCS7Unpad: Ungültige Padding-Länge.');
+
+        // 3) Validierung 4: Prüfen, ob wirklich alle letzten PadLen Bytes den Wert PadLen haben.
+        // Hinweis zur Typenwelt:
+        // - Data[I] ist ein Byte (0..255)
+        // - PadLen ist Integer
+        // Pascal konvertiert hier implizit – didaktisch ok, aber in strengem Code
+        // würde man oft Byte(PadLen) vergleichen.
+        for I := DataLen - PadLen to DataLen - 1 do
+          if Data[I] <> PadLen then
+            raise Exception.Create('PKCS7Unpad: Ungültiges Padding (Bytewert stimmt nicht).');
+        // Wenn wir hier ankommen, ist das Padding konsistent und plausibel.
+
+        // 4) Ergebnislänge ist Originaldatenlänge = DataLen - PadLen
+        SetLength(Result, DataLen - PadLen);
+
+        // 5) Originaldaten (alles vor dem Padding) in Result kopieren
+        if Length(Result) > 0 then
+          Move(Data[0], Result[0], Length(Result));
+
+        // Ergebnis ist jetzt die ungepaddete Nachricht.
+      end;
+
 
 function TryGetPKCS7PadLen(const Data: TBytes; out PadLen: Integer; BlockSize: Integer): Boolean;
   {
