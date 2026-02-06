@@ -1,63 +1,93 @@
-# AES-256-Lab (Lazarus / FreePascal)
+# AES256 Lab (Pascal/Lazarus) — Educational, Transparent Implementation
 
-English | [Deutsch](README.de.md)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+[![Status: Educational](https://img.shields.io/badge/Status-Educational-informational.svg)](#)
 
-## Important note: This is a German project
-Most explanations inside the source code and the documentation are written in **German**.
-For the main documentation, please start here: **[README.de.md](README.de.md)**.
+⚠️ **Educational project — NOT production-grade cryptography!**
 
-## Purpose (read first)
-**AES-256-Lab** is a learning and teaching project. It demonstrates an AES-256 implementation in **Pascal (Lazarus/FreePascal)** with a strong focus on **transparency and readability**.
+This repository implements **AES-256 from scratch in Pascal/Lazarus**, intentionally **without external crypto units or packages**. The goal is transparency and learning: every step is readable and discussable.
 
-✅ Focus: didactics, traceability, readable code  
-❌ Not a product: **do not use this as a production security solution**
+**Do not use this code to protect real data.** Real-world security requires much more than “AES works”:
+- correct **key derivation** from passwords (KDFs like Argon2/PBKDF2 + salt + iterations)
+- correct **IV/nonce** handling and safe defaults
+- **integrity & authenticity** (AEAD / MAC) — not only confidentiality
+- secure randomness (CSPRNG), key management, error handling
+- side-channel considerations, secure wiping, extensive testing & review
 
-## What does “not secure / not for production” mean here?
-This warning does **not automatically** mean that the AES-256 core is “broken”.
-AES-256 is considered very strong when implemented correctly, and brute-forcing a truly random 256-bit key is infeasible.
+If you need real encryption, use well-audited libraries (e.g. libsodium, OpenSSL, Botan, or platform crypto APIs).
 
-The “not for production” statement mainly refers to the **overall system** around AES:
-- password→key derivation (a fast hash like 1× SHA-256 makes weak passwords easy to guess offline; real systems use PBKDF2/Argon2/scrypt + salt)
-- lack of authentication/integrity (CBC without a tag/MAC does not reliably detect tampering; real systems prefer AEAD like AES-GCM)
-- correct IV/nonce handling and secure randomness
-- side-channels and key handling in memory
-- protocol/file-format design and error handling
-- audits, test vectors, fuzzing, maintenance
+---
 
-This repository is a **learning lab**, not a hardened security product.
+## Documentation (German project language)
 
-## Quick start
-1. Clone or download this repository
-2. Open `src/aes_256.lpi` in Lazarus
+The main documentation is in German:
+
+➡️ **Main documentation (German):** [`README.de.md`](README.de.md)
+
+---
+
+## Quick Start (Lazarus)
+
+1. Open Lazarus
+2. Load the project: `src/aes_256.lpi`
 3. Build & Run
+4. Use the GUI to try encryption/decryption and run tests (if available in the UI)
 
-Main application form:
-- `Application.CreateForm(TAES_256_Lab, AES_256_Lab)`
+> Tip: If you run into build output folders, they belong into `lib/` and should be ignored by Git (see `.gitignore`).
 
-Project structure (main units):
-- `AES_256_Lab_Main` (GUI / entry point)
-- `uAES256` (AES core building blocks)
-- `uAES256_ECB` (ECB mode – educational)
-- `uAES256_CBC` (CBC mode – educational)
-- `uAES256_Container` (container/file format helpers)
-- `uSHA256` (SHA-256 used for learning/derivations in this project)
+---
+### Screenshot
 
-Documentation / learning path (German): see `docs/`
-
-## Verification (NIST test vectors)
-This project includes GUI buttons for **NIST Known Answer Tests (KAT)** (AES-256 single-block and AES-256 CBC with IV).
-They allow anyone to quickly verify correctness against official reference values and to run a simple regression check after code changes.
+![AES256 Lab GUI](assets/GUI.png)
 
 
-## Goals
-- Transparent, readable AES-256 implementation for learning
-- Minimal “magic” and clear code structure
-- Step-by-step explanations in code and `docs/`
+## Learning Path (Docs)
+
+This repo includes a step-by-step learning path in `docs/`:
+
+- `docs/00_Project_Map.md`
+- `docs/10_AES_Introduction.md`
+- `docs/20_AES_Key_Schedule.md`
+- `docs/30_AES_Block_Operations.md`
+- `docs/40_AES_Modes_ECB_CBC.md`
+- `docs/50_Security_Notes.md`
+
+Additional references:
+
+- `docs/60_How_to_verify_with_test_vectors.md`
+- `docs/70_Unit_Reference.md`
+- `docs/80_Glossary.md`
+
+## Project Structure
+
+- `src/` — Lazarus project + Pascal source code
+  - `aes_256.lpr / aes_256.lpi` — project entry
+  - `aes_256_lab_main.*` — GUI (main form)
+  - `uAES256*.pas` — AES implementation and modes
+  - `uSHA256.pas` — SHA-256 implementation (used for educational key derivation)
+- `docs/` — educational documentation
+- `.github/` — issue/PR templates
+
+---
 
 ## License
-**GNU Affero General Public License v3 (AGPL-3.0).**  
-See `LICENSE`.
 
-## Contact
-jl-software@online.de
+Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.  
+See [`LICENSE`](LICENSE).
+
+---
+
+## Contributing
+
+Contributions are welcome — especially improvements to documentation, test vectors, and beginner-friendly explanations.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+---
+
+## Author / Motivation
+
+Created by **Jörg Liebetanz** as a transparent AES-256 learning project in Pascal/Lazarus (no external crypto packages), focused on readability and education.
+
+If you use this for teaching or want to contribute improvements (docs/tests), feel free to open an issue or PR.
+
 
