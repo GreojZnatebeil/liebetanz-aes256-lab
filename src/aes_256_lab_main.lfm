@@ -3,7 +3,7 @@ object AES_256_Lab: TAES_256_Lab
   Height = 621
   Top = 210
   Width = 442
-  Caption = 'AES_256_Lab'
+  Caption = 'AES_256_Labl'
   ClientHeight = 621
   ClientWidth = 442
   OnCreate = FormCreate
@@ -17,7 +17,7 @@ object AES_256_Lab: TAES_256_Lab
     TabOrder = 0
     OnClick = Verschluesseln_ButtonClick
   end
-  object Edit2: TEdit
+  object Passwort_Feld: TEdit
     Left = 16
     Height = 28
     Top = 120
@@ -40,7 +40,7 @@ object AES_256_Lab: TAES_256_Lab
     Width = 66
     Caption = 'Label_Text'
   end
-  object MemoPlain: TMemo
+  object Memo_Klartext: TMemo
     Left = 16
     Height = 72
     Top = 16

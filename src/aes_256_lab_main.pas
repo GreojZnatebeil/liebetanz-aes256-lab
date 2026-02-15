@@ -17,7 +17,7 @@ interface
 *)
 
 uses
-  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls, ComCtrls,ExtCtrls,
+  Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls, ComCtrls,ExtCtrls, fileinfo, winpeimagereader,
 
    // Core (Blockcipher + Tools + SelfTest)
 
@@ -62,10 +62,10 @@ type
     Verschluesseln_Button: TButton;     // Verschlüsseln (ECB)
     Selftest_Button: TButton;
 
-    Edit2: TEdit;
+    Passwort_Feld: TEdit;
     Label_Key: TLabel;
     Label_Text: TLabel;
-    MemoPlain: TMemo;
+    Memo_Klartext: TMemo;
 
     procedure CBCModus_ButtonClick(Sender: TObject);
     procedure Entschluesseln_ButtonClick(Sender: TObject);
@@ -232,7 +232,7 @@ procedure TAES_256_Lab.Verschluesseln_ButtonClick(Sender: TObject);
   ============================================================================
 }
 var
-  PlainText: string;            // Text, den der Benutzer in MemoPlain eingibt
+  PlainText: string;            // Text, den der Benutzer in Memo_Klartext eingibt
   PlainBytes: TBytes;           // Klartext als UTF-8-Byte-Array
   PaddedBytes: TBytes;          // Klartext nach PKCS#7-Padding
   HexText: string;              // Hex-Darstellung der gepaddeten Daten
@@ -278,10 +278,10 @@ begin
   // -------------------------------------------------------------------------
   // SCHRITT 1: Klartext aus dem Memo lesen
   // -------------------------------------------------------------------------
-  // MemoPlain ist das Eingabefeld, in das der Benutzer den zu
+  // Memo_Klartext ist das Eingabefeld, in das der Benutzer den zu
   // verschlüsselnden Text eingibt
 
-  PlainText := MemoPlain.Text;
+  PlainText := Memo_Klartext.Text;
   if PlainText = '' then    // Validierung: Wenn kein Text eingegeben wurde, Abbruch
   begin
     StatusMemo.Lines.Add('Hinweis: Kein Klartext in MemoPlain vorhanden, Vorgang abgebrochen.');
@@ -413,16 +413,13 @@ begin
   MemoCipher.Lines.Add(HexRound);
   MemoCipher.Lines.Add('');
 
-  // =========================================================================
-  // ENDE LEHR-TEST
-  // =========================================================================
 
   // -------------------------------------------------------------------------
   // SCHRITT 6: Passwort → SHA-256 → 32-Byte-Key
   // -------------------------------------------------------------------------
-  // Das Benutzer-Passwort (aus Edit2) wird zu einem 32-Byte-AES-Schlüssel:
+  // Das Benutzer-Passwort (aus Passwort_Feld) wird zu einem 32-Byte-AES-Schlüssel:
   // 1. Passwort als UTF-8-Bytes konvertieren
-  KeyBytes := StringToBytesUTF8(Edit2.Text);
+  KeyBytes := StringToBytesUTF8(Passwort_Feld.Text);
 
   // 2. SHA-256 Hash berechnen
   // SHA-256 erzeugt immer genau 32 Bytes (256 Bit), perfekt für AES-256
@@ -622,7 +619,7 @@ procedure TAES_256_Lab.CBCModus_ButtonClick(Sender: TObject);
   ============================================================================
 }
 var
-  PlainText: string;                     // Klartext aus MemoPlain
+  PlainText: string;                     // Klartext aus Memo_Klartext
   PlainBytes: TBytes;                    // Klartext als UTF-8-Bytes
   PaddedBytes: TBytes;                   // Gepaddeter Klartext (Vielfaches von 16 Bytes)
   HexText: string;                       // Hex-Darstellung der gepaddeten Daten
@@ -664,7 +661,7 @@ begin
   // -------------------------------------------------------------------------
   // SCHRITT 1: Klartext aus dem Memo lesen
   // -------------------------------------------------------------------------
-  PlainText := MemoPlain.Text;
+  PlainText := Memo_Klartext.Text;
   if PlainText = '' then    // Validierung: Wenn kein Text eingegeben wurde, Abbruch
   begin
     StatusMemo.Lines.Add('Hinweis: Kein Klartext in MemoPlain vorhanden, Vorgang abgebrochen.');
@@ -748,8 +745,8 @@ begin
   // SCHRITT 6: Passwort → SHA-256 → AES-Key
   // -------------------------------------------------------------------------
   // Der Ablauf ist identisch zur ECB-Verschlüsselung:
-  // 1. Passwort aus Edit2 (Eingabefeld) lesen
-  KeyBytes := StringToBytesUTF8(Edit2.Text);
+  // 1. Passwort aus Passwort_Feld (Eingabefeld) lesen
+  KeyBytes := StringToBytesUTF8(Passwort_Feld.Text);
 
   // 2. SHA-256 Hash berechnen
   // Erzeugt deterministisch 32 Bytes aus beliebigem Passwort
@@ -996,10 +993,10 @@ begin
   // WICHTIG: Das Passwort muss EXAKT das gleiche sein wie bei der Verschlüsselung!
   //
   // Ablauf:
-  // 1. Passwort aus Edit2 (Eingabefeld) lesen
+  // 1. Passwort aus Passwort_Feld (Eingabefeld) lesen
 
   // Passwort -> SHA-256 -> Key
-  KeyBytes := StringToBytesUTF8(Edit2.Text);
+  KeyBytes := StringToBytesUTF8(Passwort_Feld.Text);
 
   // 2. SHA-256 Hash berechnen
   // Dies muss den GLEICHEN Key wie bei der Verschlüsselung ergeben
@@ -1397,7 +1394,7 @@ begin
     StatusMemo.Lines.Add('Hinweis: Cipher ist nicht als CBC markiert (Testen ist möglich, aber vermutlich falsch).');
 
   // Passwort -> SHA-256 -> Key
-  KeyBytes := StringToBytesUTF8(Edit2.Text);
+  KeyBytes := StringToBytesUTF8(Passwort_Feld.Text);
   KeyBytes := SHA256(KeyBytes);
 
   AES256InitKey(KeyBytes, Ctx);
@@ -2102,7 +2099,20 @@ procedure TAES_256_Lab.FormCreate(Sender: TObject);
   - Modus-Kontext (für spätere CBC-Teile): NIST SP 800-38A (Modes of Operation).
   ============================================================================
 }
+var
+  FileVerInfo: TFileVersionInfo;
+
 begin
+
+   FileVerInfo := TFileVersionInfo.Create(nil);
+    FileVerInfo := TFileVersionInfo.Create(nil);
+  try
+    FileVerInfo.ReadFileInfo;
+    // Ausgabe der Version
+    AES_256_Lab.Caption:= 'AES_256_Lab V-' + FileVerInfo.VersionStrings.Values['FileVersion'];
+  finally
+    FileVerInfo.Free;
+  end;
 
   // -------------------------------------------------------------------------
   // SCHRITT 1: Label-Beschriftungen setzen
@@ -2175,6 +2185,8 @@ begin
   // - Alle GUI-Komponenten sind beschriftet
   // - Alle internen Variablen sind initialisiert
   // - Programm ist bereit für Benutzerinteraktion
+
+
 end;
 
 end.
